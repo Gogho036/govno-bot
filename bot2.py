@@ -49,10 +49,11 @@ BP_LEVELS = [
 VIP_BP_COST_STARS = 40
 VIP_BP_LEVELS = [
     {"req": 5, "type": "stars", "value": 8, "text": "8 ⭐️ Звёзд"},
-    {"req": 10, "type": "vip_case", "text": "🎁 VIP Мега-Кейс (0-15 ⭐️ Звёзд)"},
-    {"req": 12, "type": "stars", "value": 30, "text": "30 ⭐️ Звёзд"},
+    {"req": 10, "type": "vip_case1", "text": "🎁 VIP Мега-Кейс (0-15 ⭐️ Звёзд)"},
+    {"req": 12, "type": "stars", "value": 10, "text": "10 ⭐️ Звёзд"},
     {"req": 20, "type": "mult", "value": 0.20, "text": "+0.20x к множителю 📈"},
-    {"req": 35, "type": "title_mult", "value": 0.35, "title": "VIP Фембой 💎", "text": "Звание «VIP Фембой 💎» (+0.35x к множителю)"}
+    {"req": 35, "type": "vip_case2", "text": "🎰 Супер VIP-Кейс (0-15 ⭐️ и шанс буста +0.01x..+0.20x)"},
+    {"req": 50, "type": "title_mult_stars", "value": 0.35, "stars_val": 15, "title": "VIP Фембой 💎", "text": "15 ⭐️ + Звание «VIP Фембой 💎» (+0.35x)"}
 ]
 
 # === БАЗА ДАННЫХ ===
@@ -108,7 +109,7 @@ def get_user_stats(user_data):
     # Бусты и звания из VIP БП
     for lvl in VIP_BP_LEVELS:
         if lvl["req"] in claimed_vip:
-            if lvl["type"] in ("mult", "title_mult"):
+            if lvl["type"] in ("mult", "title_mult", "title_mult_stars"):
                 mult += lvl.get("value", 0)
             if "title" in lvl:
                 title = lvl["title"]
@@ -199,6 +200,21 @@ async def check_access(message: types.Message) -> bool:
         return False
         
     return True
+
+# === АНИМАЦИЯ КЕЙСА ===
+async def animate_case_opening(call: types.CallbackQuery, case_title="🧰 КЕЙС"):
+    frames = [
+        f"🎰 <b>{case_title}</b>\n\n[ ❓ | ❓ | ❓ ]\n<i>Запуск рулетки...</i>",
+        f"🎰 <b>{case_title}</b>\n\n[ ⚡️ | ⭐️ | 🎁 ]\n<i>Крутим барабан...</i>",
+        f"🎰 <b>{case_title}</b>\n\n[ 👑 | 💎 | 🚀 ]\n<i>Замедление...</i>",
+        f"🎰 <b>{case_title}</b>\n\n[ ⭐ | ✨ | 🏆 ]\n<i>Открываем...</i>"
+    ]
+    for frame in frames:
+        try:
+            await call.message.edit_text(frame, parse_mode="HTML")
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
 
 # === СТАРТ ===
 @dp.message(CommandStart())
@@ -488,7 +504,7 @@ async def bp_claim_callback(call: types.CallbackQuery):
         await call.answer("❌ Ты уже забрал эту награду!", show_alert=True)
         return
         
-    if refs < req:
+    if refs < req and int(user_id) not in ADMIN_IDS:
         await call.answer(f"❌ Недостаточно рефералов! Нужно {req}, у тебя {refs}.", show_alert=True)
         return
         
@@ -507,16 +523,18 @@ async def bp_claim_callback(call: types.CallbackQuery):
         reward_msg = f"+{stars} ⭐️ звезд"
     elif target_lvl["type"] in ("mult", "title_mult"):
         bonus = target_lvl["value"]
-        reward_msg = f"+{bonus}x к множитель"
+        reward_msg = f"+{bonus}x к множителю"
         if "title" in target_lvl:
             reward_msg += f" и звание «{target_lvl['title']}»"
     elif target_lvl["type"] == "case1":
+        await animate_case_opening(call, "🧰 ОБЫЧНЫЙ КЕЙС")
         win_stars = random.randint(1, 15)
         win_boost = round(random.uniform(0.01, 0.15), 2)
         user_data["balance"] = round(user_data["balance"] + win_stars, 2)
         user_data["claimed_bp"].append(f"case1_boost_{win_boost}")
-        reward_msg = f"🧰 Открыт Кейс! Выпало: +{win_stars} ⭐️ и +{win_boost}x к постоянному множителю!"
+        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ КЕЙСА:</b>\n\n⭐ <b>+{win_stars} Звёзд</b>\n📈 <b>+{win_boost}x к постоянному множителю!</b>"
     elif target_lvl["type"] == "case2":
+        await animate_case_opening(call, "🧰 ВРЕМЕННЫЙ КЕЙС")
         win_boost = round(random.uniform(0.01, 0.10), 2)
         hours = random.randint(1, 24)
         until_dt = datetime.now() + timedelta(hours=hours)
@@ -524,11 +542,15 @@ async def bp_claim_callback(call: types.CallbackQuery):
             "value": win_boost,
             "until": until_dt.isoformat()
         }
-        reward_msg = f"🧰 Открыт Временный Кейс! Выпал буст +{win_boost}x на {hours} час(ов)!"
+        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ ВРЕМЕННОГО КЕЙСА:</b>\n\n⏳ Буст <b>+{win_boost}x на {hours} час(ов)!</b>"
             
     save_db(db)
-    await call.answer(f"🎉 Успешно! {reward_msg}", show_alert=True)
-    await send_bp_menu(call, user_id)
+    if "case" in target_lvl["type"]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Обратно в БП", callback_data="open_bp")]])
+        await call.message.edit_text(reward_msg, reply_markup=kb, parse_mode="HTML")
+    else:
+        await call.answer(f"🎉 Успешно! {reward_msg}", show_alert=True)
+        await send_bp_menu(call, user_id)
 
 # === VIP БОЕВОЙ ПРОПУСК ===
 async def send_vip_bp_menu(call, user_id):
@@ -671,14 +693,32 @@ async def vip_claim_callback(call: types.CallbackQuery):
         reward_msg = f"+{bonus}x к множителю"
         if "title" in target_lvl:
             reward_msg += f" и звание «{target_lvl['title']}»"
-    elif target_lvl["type"] == "vip_case":
+    elif target_lvl["type"] == "title_mult_stars":
+        stars = target_lvl["stars_val"]
+        bonus = target_lvl["value"]
+        title = target_lvl["title"]
+        user_data["balance"] = round(user_data["balance"] + stars, 2)
+        reward_msg = f"+{stars} ⭐️ звёзд, звание «{title}» и +{bonus}x к множителю!"
+    elif target_lvl["type"] == "vip_case1":
+        await animate_case_opening(call, "🎁 VIP МЕГА-КЕЙС")
         win_stars = random.randint(0, 15)
         user_data["balance"] = round(user_data["balance"] + win_stars, 2)
-        reward_msg = f"🎁 VIP Мега-Кейс открыт! Выпало: +{win_stars} ⭐️ звезд!"
+        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ VIP МЕГА-КЕЙСА:</b>\n\n⭐ <b>+{win_stars} Звёзд!</b>"
+    elif target_lvl["type"] == "vip_case2":
+        await animate_case_opening(call, "🎰 СУПЕР VIP-КЕЙС")
+        win_stars = random.randint(0, 15)
+        win_boost = round(random.uniform(0.01, 0.20), 2)
+        user_data["balance"] = round(user_data["balance"] + win_stars, 2)
+        user_data["claimed_vip_bp"].append(f"vip_case2_boost_{win_boost}")
+        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ СУПЕР VIP-КЕЙСА:</b>\n\n⭐ <b>+{win_stars} Звёзд!</b>\n📈 <b>+{win_boost}x к множителю!</b>"
             
     save_db(db)
-    await call.answer(f"🎉 Успешно получена VIP Награда! {reward_msg}", show_alert=True)
-    await send_vip_bp_menu(call, user_id)
+    if "case" in target_lvl["type"]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Обратно в VIP БП", callback_data="open_vip_bp")]])
+        await call.message.edit_text(reward_msg, reply_markup=kb, parse_mode="HTML")
+    else:
+        await call.answer(f"🎉 Успешно получена VIP Награда! {reward_msg}", show_alert=True)
+        await send_vip_bp_menu(call, user_id)
 
 # === СИСТЕМА ЗАДАНИЙ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ===
 async def show_next_task(message_or_call, user_id, is_edit=False):
