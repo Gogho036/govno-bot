@@ -48,12 +48,11 @@ BP_LEVELS = [
 # === СТУПЕНИ VIP ПРОПУСКА (VIP PASS - 40 STARS VIA TG PAY) ===
 VIP_BP_COST_STARS = 40
 VIP_BP_LEVELS = [
-    {"req": 5, "type": "stars", "value": 8, "text": "8 ⭐️ Звёзд"},
-    {"req": 10, "type": "vip_case1", "text": "🎁 VIP Мега-Кейс (0-15 ⭐️ Звёзд)"},
-    {"req": 12, "type": "stars", "value": 10, "text": "10 ⭐️ Звёзд"},
-    {"req": 20, "type": "mult", "value": 0.20, "text": "+0.20x к множителю 📈"},
-    {"req": 35, "type": "vip_case2", "text": "🎰 Супер VIP-Кейс (0-15 ⭐️ и шанс буста +0.01x..+0.20x)"},
-    {"req": 50, "type": "title_mult_stars", "value": 0.35, "stars_val": 15, "title": "VIP Фембой 💎", "text": "15 ⭐️ + Звание «VIP Фембой 💎» (+0.35x)"}
+    {"req": 3, "type": "stars", "value": 15, "text": "15 ⭐️ Звёзд"},
+    {"req": 7, "type": "mult", "value": 0.20, "text": "+0.20x к множителю 📈"},
+    {"req": 12, "type": "stars", "value": 30, "text": "30 ⭐️ Звёзд"},
+    {"req": 20, "type": "vip_case1", "text": "🎁 VIP Мега-Кейс (20-50 ⭐️ Звёзд)"},
+    {"req": 35, "type": "title_mult_stars", "value": 0.35, "stars_val": 15, "title": "VIP Фембой 💎", "text": "15 ⭐️ + Звание «VIP Фембой 💎» (+0.35x)"}
 ]
 
 # === БАЗА ДАННЫХ ===
@@ -701,16 +700,9 @@ async def vip_claim_callback(call: types.CallbackQuery):
         reward_msg = f"+{stars} ⭐️ звёзд, звание «{title}» и +{bonus}x к множителю!"
     elif target_lvl["type"] == "vip_case1":
         await animate_case_opening(call, "🎁 VIP МЕГА-КЕЙС")
-        win_stars = random.randint(0, 15)
+        win_stars = random.randint(20, 50)
         user_data["balance"] = round(user_data["balance"] + win_stars, 2)
         reward_msg = f"🎉 <b>ВЫПАЛО ИЗ VIP МЕГА-КЕЙСА:</b>\n\n⭐ <b>+{win_stars} Звёзд!</b>"
-    elif target_lvl["type"] == "vip_case2":
-        await animate_case_opening(call, "🎰 СУПЕР VIP-КЕЙС")
-        win_stars = random.randint(0, 15)
-        win_boost = round(random.uniform(0.01, 0.20), 2)
-        user_data["balance"] = round(user_data["balance"] + win_stars, 2)
-        user_data["claimed_vip_bp"].append(f"vip_case2_boost_{win_boost}")
-        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ СУПЕР VIP-КЕЙСА:</b>\n\n⭐ <b>+{win_stars} Звёзд!</b>\n📈 <b>+{win_boost}x к множителю!</b>"
             
     save_db(db)
     if "case" in target_lvl["type"]:
