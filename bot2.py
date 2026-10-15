@@ -2,15 +2,10 @@ import asyncio
 import logging
 import json
 import os
-import random
-from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton, 
-    ReplyKeyboardMarkup, KeyboardButton, LabeledPrice, PreCheckoutQuery
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 # === НАСТРОЙКИ И ДАННЫЕ ===
 BOT_TOKEN = "8901920618:AAHVa3vOt7RreOd1d-WoF1JhXvN3WPbW-hA"
@@ -34,25 +29,15 @@ dp = Dispatcher()
 
 user_states = {}
 
-# === СТУПЕНИ ОБЫЧНОГО БОЕВОГО ПРОПУСКА (BATTLE PASS) ===
+# === СТУПЕНИ БОЕВОГО ПРОПУСКА (BATTLE PASS) ===
 BP_LEVELS = [
     {"req": 5, "type": "stars", "value": 3, "text": "3 ⭐️ Звезды"},
     {"req": 10, "type": "mult", "value": 0.06, "text": "+0.06x к множителю 📈"},
-    {"req": 15, "type": "title_mult", "value": 0.10, "title": "Любитель 🐣", "text": "Звание «Любитель 🐣» (+0.10x к множителю)"},
-    {"req": 20, "type": "stars", "value": 6, "text": "6 ⭐️ Звёзд"},
-    {"req": 30, "type": "bp_case", "text": "🧰 Обычный Кейс (0-8 ⭐️ Звёзд)"},
-    {"req": 50, "type": "stars", "value": 15, "text": "15 ⭐️ Звёзд"}
-]
-
-# === СТУПЕНИ VIP ПРОПУСКА (VIP PASS - 40 STARS VIA TG PAY) ===
-VIP_BP_COST_STARS = 40
-VIP_BP_LEVELS = [
-    {"req": 5, "type": "stars", "value": 5, "text": "5 ⭐️ Звёзд"},
-    {"req": 10, "type": "mult", "value": 0.10, "text": "+0.10x к множителю 📈"},
-    {"req": 15, "type": "stars", "value": 8, "text": "8 ⭐️ Звёзд"},
-    {"req": 20, "type": "vip_case1", "text": "🎁 VIP Кейс #1 (0-15 ⭐️ Звёзд)"},
-    {"req": 30, "type": "vip_case2", "text": "🎰 VIP Кейс #2 (Буст +0.01x..+0.15x)"},
-    {"req": 50, "type": "title_mult", "value": 0.35, "title": "Фембой 🎀", "text": "Звание «Фембой 🎀» (+0.35x к множителю)"}
+    {"req": 15, "type": "stars", "value": 5, "text": "5 ⭐️ Звёзд"},
+    {"req": 20, "type": "title_mult", "value": 0.10, "title": "Любитель ⚔️", "text": "Звание «Любитель» (+0.10x к множителю) 🏅"},
+    {"req": 30, "type": "stars", "value": 10, "text": "10 ⭐️ Звёзд"},
+    {"req": 35, "type": "mult", "value": 0.08, "text": "+0.08x к множителю 📈"},
+    {"req": 50, "type": "title_mult", "value": 0.25, "title": "Бог ⚡️", "text": "Звание «Бог» (+0.25x к множителю) 👑"}
 ]
 
 # === БАЗА ДАННЫХ ===
@@ -77,9 +62,18 @@ def load_db():
             if "users" not in data:
                 data["users"] = {}
             if "promocodes" not in data:
-                data["promocodes"] = {}
+                data["promocodes"] = {
+                    "FEMBOY": {"stars": 2, "max_uses": 50, "used_by": []},
+                    "FEMBOY3": {"stars": 3, "max_uses": 999999, "used_by": []},
+                    "ADMIN": {"stars": 7, "max_uses": 1, "used_by": []}
+                }
             if "tasks" not in data:
-                data["tasks"] = {}
+                data["tasks"] = {
+                    "1": {"url": "https://t.me/femboyvu", "stars": 3}
+                }
+            if "ADMIN" not in data["promocodes"]:
+                data["promocodes"]["ADMIN"] = {"stars": 7, "max_uses": 1, "used_by": []}
+                save_db(data)
             return data
     except Exception:
         return {"users": {}, "promocodes": {}, "tasks": {}}
@@ -91,43 +85,26 @@ def save_db(db_data):
 # === РАСЧЁТ СТАТИСТИКИ И МНОЖИТЕЛЕЙ ===
 def get_user_stats(user_data):
     refs = user_data.get("referrals", 0)
-    claimed_bp = user_data.get("claimed_bp", [])
-    claimed_vip = user_data.get("claimed_vip_bp", [])
+    claimed = user_data.get("claimed_bp", [])
     
     mult = 1.0 + (refs * 0.02)
     title = "Новичок 🐣"
-
-    # Бусты и звания из обычного БП
+    
     for lvl in BP_LEVELS:
-        if lvl["req"] in claimed_bp:
+        if lvl["req"] in claimed:
             if lvl["type"] in ("mult", "title_mult"):
-                mult += lvl.get("value", 0)
+                mult += lvl["value"]
             if "title" in lvl:
                 title = lvl["title"]
-
-    # Бусты и звания из VIP БП
-    for lvl in VIP_BP_LEVELS:
-        if lvl["req"] in claimed_vip:
-            if lvl["type"] in ("mult", "title_mult"):
-                mult += lvl.get("value", 0)
-            if "title" in lvl:
-                title = lvl["title"]
-
-    # Проверка постоянных бустов из кейсов
-    for item in claimed_vip:
-        if isinstance(item, str) and item.startswith("vip_case2_boost_"):
-            try:
-                mult += float(item.split("_")[3])
-            except Exception:
-                pass
-
+                
     return round(mult, 2), title
 
 # === КЛАВИАТУРЫ ===
 def get_main_keyboard():
     kb = [
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🎁 Промокоды")],
-        [KeyboardButton(text="📋 Задания"), KeyboardButton(text="🛠 Поддержка")]
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🎫 Боевой Пропуск")],
+        [KeyboardButton(text="🎁 Промокоды"), KeyboardButton(text="📋 Задания")],
+        [KeyboardButton(text="🛠 Поддержка")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -198,21 +175,6 @@ async def check_access(message: types.Message) -> bool:
         
     return True
 
-# === АНИМАЦИЯ КЕЙСА ===
-async def animate_case_opening(call: types.CallbackQuery, case_title="🧰 КЕЙС"):
-    frames = [
-        f"🎰 <b>{case_title}</b>\n\n[ ❓ | ❓ | ❓ ]\n<i>Запуск рулетки...</i>",
-        f"🎰 <b>{case_title}</b>\n\n[ ⚡️ | ⭐️ | 🎁 ]\n<i>Крутим барабан...</i>",
-        f"🎰 <b>{case_title}</b>\n\n[ 👑 | 💎 | 🚀 ]\n<i>Замедление...</i>",
-        f"🎰 <b>{case_title}</b>\n\n[ ⭐ | ✨ | 🏆 ]\n<i>Открываем...</i>"
-    ]
-    for frame in frames:
-        try:
-            await call.message.edit_text(frame, parse_mode="HTML")
-            await asyncio.sleep(0.5)
-        except Exception:
-            pass
-
 # === СТАРТ ===
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
@@ -242,14 +204,23 @@ async def start_cmd(message: types.Message):
             "activated_codes": [],
             "approved_withdraws": 0,
             "claimed_bp": [],
-            "claimed_vip_bp": [],
-            "has_vip": False,
-            "temp_boost": {},
             "is_banned": False
         }
     else:
         db["users"][user_id]["username"] = username
         db["users"][user_id]["first_name"] = first_name
+        if "ref_bonus_given" not in db["users"][user_id]:
+            db["users"][user_id]["ref_bonus_given"] = False
+        if "approved_withdraws" not in db["users"][user_id]:
+            db["users"][user_id]["approved_withdraws"] = 0
+        if "claimed_bp" not in db["users"][user_id]:
+            db["users"][user_id]["claimed_bp"] = []
+        if "completed_tasks" not in db["users"][user_id]:
+            db["users"][user_id]["completed_tasks"] = []
+        if "is_banned" not in db["users"][user_id]:
+            db["users"][user_id]["is_banned"] = False
+        if not db["users"][user_id].get("referred_by") and referrer_id:
+            db["users"][user_id]["referred_by"] = referrer_id
 
     save_db(db)
 
@@ -365,27 +336,21 @@ async def profile_sec(message: types.Message):
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
     db = load_db()
-    user_data = db["users"].get(user_id, {"balance": 0, "referrals": 0})
+    user_data = db["users"].get(user_id, {"balance": 0, "referrals": 0, "claimed_bp": []})
     balance = user_data.get("balance", 0)
     refs = user_data.get("referrals", 0)
-    
-    is_admin = int(user_id) in ADMIN_IDS
-    has_vip = user_data.get("has_vip", False) or is_admin
-    vip_status_str = "АКТИВЕН 👑 (Админ)" if is_admin else ("АКТИВЕН 👑" if has_vip else "Не куплен ❌")
     
     mult, title = get_user_stats(user_data)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💸 Вывести звёзды", callback_data="withdraw_menu")],
-        [InlineKeyboardButton(text="🎫 Боевой Пропуск", callback_data="open_bp")],
-        [InlineKeyboardButton(text=f"👑 VIP Пропуск ({VIP_BP_COST_STARS} ⭐)", callback_data="open_vip_bp")]
+        [InlineKeyboardButton(text="🎫 Боевой Пропуск", callback_data="open_bp")]
     ])
 
     text = (
         f"👤 <b>ТВОЙ ПРОФИЛЬ</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🎖 <b>Звание:</b> {title}\n"
-        f"👑 <b>VIP Статус:</b> {vip_status_str}\n"
         f"👥 <b>Приглашено друзей:</b> <code>{refs}</code>\n"
         f"⚡️ <b>Множитель наград:</b> <code>{mult}x</code>\n"
         f"⭐ <b>Баланс:</b> <code>{balance}</code> звезд\n"
@@ -414,27 +379,21 @@ async def back_to_profile(call: types.CallbackQuery):
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
     db = load_db()
-    user_data = db["users"].get(user_id, {"balance": 0, "referrals": 0})
+    user_data = db["users"].get(user_id, {"balance": 0, "referrals": 0, "claimed_bp": []})
     balance = user_data.get("balance", 0)
     refs = user_data.get("referrals", 0)
-    
-    is_admin = int(user_id) in ADMIN_IDS
-    has_vip = user_data.get("has_vip", False) or is_admin
-    vip_status_str = "АКТИВЕН 👑 (Админ)" if is_admin else ("АКТИВЕН 👑" if has_vip else "Не куплен ❌")
     
     mult, title = get_user_stats(user_data)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💸 Вывести звёзды", callback_data="withdraw_menu")],
-        [InlineKeyboardButton(text="🎫 Боевой Пропуск", callback_data="open_bp")],
-        [InlineKeyboardButton(text=f"👑 VIP Пропуск ({VIP_BP_COST_STARS} ⭐)", callback_data="open_vip_bp")]
+        [InlineKeyboardButton(text="🎫 Боевой Пропуск", callback_data="open_bp")]
     ])
 
     text = (
         f"👤 <b>ТВОЙ ПРОФИЛЬ</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🎖 <b>Звание:</b> {title}\n"
-        f"👑 <b>VIP Статус:</b> {vip_status_str}\n"
         f"👥 <b>Приглашено друзей:</b> <code>{refs}</code>\n"
         f"⚡️ <b>Множитель наград:</b> <code>{mult}x</code>\n"
         f"⭐ <b>Баланс:</b> <code>{balance}</code> звезд\n"
@@ -444,8 +403,8 @@ async def back_to_profile(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
-# === ОБЫЧНЫЙ БОЕВОЙ ПРОПУСК (BATTLE PASS) ===
-async def send_bp_menu(call, user_id):
+# === БОЕВОЙ ПРОПУСК (BATTLE PASS) ===
+async def send_bp_menu(message_or_call, user_id, is_edit=False):
     db = load_db()
     user_data = db["users"].get(user_id, {"referrals": 0, "claimed_bp": []})
     refs = user_data.get("referrals", 0)
@@ -468,7 +427,7 @@ async def send_bp_menu(call, user_id):
         
         if req in claimed:
             status = "✅ [Забрано]"
-        elif refs >= req or int(user_id) in ADMIN_IDS:
+        elif refs >= req:
             status = "🟢 [Доступно]"
             kb_buttons.append([InlineKeyboardButton(text=f"🎁 Забрать за {req} друзей", callback_data=f"bp_claim_{req}")])
         else:
@@ -478,11 +437,21 @@ async def send_bp_menu(call, user_id):
         
     kb_buttons.append([InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data="back_to_profile")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    await call.message.edit_text(bp_text, reply_markup=kb, parse_mode="HTML")
+    
+    if is_edit:
+        await message_or_call.message.edit_text(bp_text, reply_markup=kb, parse_mode="HTML")
+    else:
+        await message_or_call.answer(bp_text, reply_markup=kb, parse_mode="HTML")
+
+@dp.message(F.text == "🎫 Боевой Пропуск")
+async def bp_sec_msg(message: types.Message):
+    if not await check_access(message):
+        return
+    await send_bp_menu(message, str(message.from_user.id), is_edit=False)
 
 @dp.callback_query(F.data == "open_bp")
 async def bp_sec_cb(call: types.CallbackQuery):
-    await send_bp_menu(call, str(call.from_user.id))
+    await send_bp_menu(call, str(call.from_user.id), is_edit=True)
 
 @dp.callback_query(F.data.startswith("bp_claim_"))
 async def bp_claim_callback(call: types.CallbackQuery):
@@ -501,7 +470,7 @@ async def bp_claim_callback(call: types.CallbackQuery):
         await call.answer("❌ Ты уже забрал эту награду!", show_alert=True)
         return
         
-    if refs < req and int(user_id) not in ADMIN_IDS:
+    if refs < req:
         await call.answer(f"❌ Недостаточно рефералов! Нужно {req}, у тебя {refs}.", show_alert=True)
         return
         
@@ -523,179 +492,10 @@ async def bp_claim_callback(call: types.CallbackQuery):
         reward_msg = f"+{bonus}x к множителю"
         if "title" in target_lvl:
             reward_msg += f" и звание «{target_lvl['title']}»"
-    elif target_lvl["type"] == "bp_case":
-        await animate_case_opening(call, "🧰 ОБЫЧНЫЙ КЕЙС")
-        win_stars = random.randint(0, 8)
-        user_data["balance"] = round(user_data["balance"] + win_stars, 2)
-        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ КЕЙСА:</b>\n\n⭐ <b>+{win_stars} Звёзд!</b>"
             
     save_db(db)
-    if target_lvl["type"] == "bp_case":
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Обратно в БП", callback_data="open_bp")]])
-        await call.message.edit_text(reward_msg, reply_markup=kb, parse_mode="HTML")
-    else:
-        await call.answer(f"🎉 Успешно! {reward_msg}", show_alert=True)
-        await send_bp_menu(call, user_id)
-
-# === VIP БОЕВОЙ ПРОПУСК ===
-async def send_vip_bp_menu(call, user_id):
-    db = load_db()
-    user_data = db["users"].get(user_id, {"referrals": 0, "claimed_vip_bp": [], "has_vip": False})
-    refs = user_data.get("referrals", 0)
-    claimed = user_data.get("claimed_vip_bp", [])
-    
-    is_admin = int(user_id) in ADMIN_IDS
-    has_vip = user_data.get("has_vip", False) or is_admin
-    mult, title = get_user_stats(user_data)
-    
-    status_vip = "🟢 <b>БЕСПЛАТНЫЙ ДОСТУП (АДМИН)</b>" if is_admin else ("🟢 <b>АКТИВЕН</b>" if has_vip else "🔴 <b>НЕ КУПЛЕН</b>")
-
-    vip_text = (
-        f"👑 <b>VIP БОЕВОЙ ПРОПУСК</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"Статус VIP: {status_vip}\n"
-        f"👥 Приглашено друзей: <b>{refs}</b>\n"
-        f"⚡️ Твой множитель: <code>{mult}x</code>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Приобрети VIP Пропуск за {VIP_BP_COST_STARS} ⭐ Telegram Stars, чтобы разблокировать доступ к эксклюзивным наградам!</i>\n\n"
-    )
-    
-    kb_buttons = []
-    if not has_vip:
-        kb_buttons.append([InlineKeyboardButton(text=f"⭐ Купить VIP за {VIP_BP_COST_STARS} Telegram Stars", callback_data="buy_vip_stars")])
-
-    for lvl in VIP_BP_LEVELS:
-        req = lvl["req"]
-        desc = lvl["text"]
-        
-        if req in claimed:
-            status = "✅ [Забрано]"
-        elif has_vip and (refs >= req or is_admin):
-            status = "🟢 [Доступно]"
-            kb_buttons.append([InlineKeyboardButton(text=f"👑 VIP Награда за {req} друзей", callback_data=f"vip_claim_{req}")])
-        elif not has_vip:
-            status = f"🔒 [VIP Заблокирован]"
-        else:
-            status = f"🔒 [{refs}/{req}]"
-            
-        vip_text += f"{status} <b>{req} Друзей</b> — {desc}\n"
-        
-    kb_buttons.append([InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data="back_to_profile")])
-    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
-    await call.message.edit_text(vip_text, reply_markup=kb, parse_mode="HTML")
-
-@dp.callback_query(F.data == "open_vip_bp")
-async def vip_bp_sec_cb(call: types.CallbackQuery):
-    await send_vip_bp_menu(call, str(call.from_user.id))
-
-# === ПОКУПКА VIP НАСТОЯЩИМИ TELEGRAM STARS ===
-@dp.callback_query(F.data == "buy_vip_stars")
-async def buy_vip_stars_callback(call: types.CallbackQuery):
-    user_id = str(call.from_user.id)
-    db = load_db()
-    
-    if int(user_id) in ADMIN_IDS:
-        await call.answer("👑 Ты админ, у тебя бесплатный доступ!", show_alert=True)
-        return
-
-    if db["users"].get(user_id, {}).get("has_vip", False):
-        await call.answer("❌ У тебя уже куплен VIP Пропуск!", show_alert=True)
-        return
-
-    prices = [LabeledPrice(label="VIP Пропуск Femboy Stars", amount=VIP_BP_COST_STARS)]
-    try:
-        await bot.send_invoice(
-            chat_id=call.from_user.id,
-            title="👑 VIP Пропуск Femboy Stars",
-            description="Разблокирует эксклюзивные VIP-награды, бусты и звание!",
-            payload="vip_pass_payment",
-            currency="XTR",
-            prices=prices,
-            provider_token=""
-        )
-        await call.answer()
-    except Exception as e:
-        logging.error(f"Ошибка вызова инвойса Stars: {e}")
-        await call.answer("❌ Ошибка запуска оплаты Telegram Stars!", show_alert=True)
-
-@dp.pre_checkout_query(F.invoice_payload == "vip_pass_payment")
-async def process_vip_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@dp.message(F.successful_payment)
-async def process_vip_successful_payment(message: types.Message):
-    if message.successful_payment.invoice_payload == "vip_pass_payment":
-        user_id = str(message.from_user.id)
-        db = load_db()
-        if user_id in db["users"]:
-            db["users"][user_id]["has_vip"] = True
-            save_db(db)
-        await message.answer(
-            "🎉 <b>ПОЗДРАВЛЯЕМ! ОПЛАТА УСПЕШНА!</b>\n\n"
-            "👑 Твой VIP Пропуск активирован! Заходи в Профиль -> VIP Пропуск и забирай свои эксклюзивные награды!",
-            parse_mode="HTML"
-        )
-
-@dp.callback_query(F.data.startswith("vip_claim_"))
-async def vip_claim_callback(call: types.CallbackQuery):
-    user_id = str(call.from_user.id)
-    req = int(call.data.split("_")[2])
-    
-    db = load_db()
-    user_data = db["users"].get(user_id, {})
-    is_admin = int(user_id) in ADMIN_IDS
-    
-    if not (user_data.get("has_vip", False) or is_admin):
-        await call.answer(f"❌ Сначала купи VIP Пропуск за {VIP_BP_COST_STARS} Telegram Stars!", show_alert=True)
-        return
-        
-    refs = user_data.get("referrals", 0)
-    claimed = user_data.get("claimed_vip_bp", [])
-    
-    if req in claimed:
-        await call.answer("❌ Ты уже забрал эту VIP награду!", show_alert=True)
-        return
-        
-    if refs < req and not is_admin:
-        await call.answer(f"❌ Недостаточно рефералов! Нужно {req}, у тебя {refs}.", show_alert=True)
-        return
-        
-    target_lvl = next((l for l in VIP_BP_LEVELS if l["req"] == req), None)
-    if not target_lvl:
-        await call.answer("❌ Ошибка награды!", show_alert=True)
-        return
-        
-    claimed.append(req)
-    user_data["claimed_vip_bp"] = claimed
-    
-    reward_msg = ""
-    if target_lvl["type"] == "stars":
-        stars = target_lvl["value"]
-        user_data["balance"] = round(user_data["balance"] + stars, 2)
-        reward_msg = f"+{stars} ⭐️ звезд"
-    elif target_lvl["type"] in ("mult", "title_mult"):
-        bonus = target_lvl["value"]
-        reward_msg = f"+{bonus}x к множителю"
-        if "title" in target_lvl:
-            reward_msg += f" и звание «{target_lvl['title']}»"
-    elif target_lvl["type"] == "vip_case1":
-        await animate_case_opening(call, "🎁 VIP КЕЙС #1")
-        win_stars = random.randint(0, 15)
-        user_data["balance"] = round(user_data["balance"] + win_stars, 2)
-        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ VIP КЕЙСА #1:</b>\n\n⭐ <b>+{win_stars} Звёзд!</b>"
-    elif target_lvl["type"] == "vip_case2":
-        await animate_case_opening(call, "🎰 VIP КЕЙС #2")
-        win_boost = round(random.uniform(0.01, 0.15), 2)
-        user_data["claimed_vip_bp"].append(f"vip_case2_boost_{win_boost}")
-        reward_msg = f"🎉 <b>ВЫПАЛО ИЗ VIP КЕЙСА #2:</b>\n\n📈 <b>+{win_boost}x к постоянному множителю!</b>"
-            
-    save_db(db)
-    if "case" in target_lvl["type"]:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Обратно в VIP БП", callback_data="open_vip_bp")]])
-        await call.message.edit_text(reward_msg, reply_markup=kb, parse_mode="HTML")
-    else:
-        await call.answer(f"🎉 Успешно получена VIP Награда! {reward_msg}", show_alert=True)
-        await send_vip_bp_menu(call, user_id)
+    await call.answer(f"🎉 Успешно! Получено: {reward_msg}", show_alert=True)
+    await send_bp_menu(call, user_id, is_edit=True)
 
 # === СИСТЕМА ЗАДАНИЙ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ===
 async def show_next_task(message_or_call, user_id, is_edit=False):
@@ -794,7 +594,7 @@ async def support_sec(message: types.Message):
     user_states[message.from_user.id] = "support"
     await message.answer("🛠 <b>Служба поддержки</b>\n\nНапиши своё сообщение одним текстом:", parse_mode="HTML")
 
-# === ОБРАБОТКА ВЫВОДОВ (ТОЛЬКО РУЧНАЯ ПРОВЕРКА) ===
+# === ОБРАБОТКА ВЫВОДОВ ===
 @dp.callback_query(F.data.startswith("withdraw_"))
 async def process_withdraw(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -820,6 +620,30 @@ async def process_withdraw(call: types.CallbackQuery):
     
     approved_count = db["users"][user_id].get("approved_withdraws", 0)
 
+    if approved_count >= 3:
+        try:
+            await bot.send_message(
+                WITHDRAW_CHANNEL,
+                f"🤖 <b>АВТО-ВЫВОД СРАБОТАЛ (Доверенный тип)!</b>\n\n"
+                f"🆔 ID: {user_id}\n"
+                f"👤 Пользователь: {user_name} ({username})\n"
+                f"⭐ Сумма: {amount} звезд\n"
+                f"🎁 Товар: {item_desc}\n"
+                f"⚡ Успешных выводов до этого: {approved_count}",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logging.error(f"Ошибка логирования авто-вывода: {e}")
+
+        await call.message.edit_text(
+            f"✅ <b>Заявка успешно выполнена автоматически!</b>\n\n"
+            f"Списано: <code>{amount}</code> звезд ⭐\n"
+            f"Товар: <code>{item_desc}</code>\n"
+            f"🤖 Подарок отправлен на ваш аккаунт.",
+            parse_mode="HTML"
+        )
+        return
+
     try:
         await bot.send_message(
             WITHDRAW_CHANNEL,
@@ -828,7 +652,7 @@ async def process_withdraw(call: types.CallbackQuery):
             f"👤 Пользователь: {user_name} ({username})\n"
             f"⭐ Сумма: {amount} звезд\n"
             f"🎁 Товар: {item_desc}\n"
-            f"📊 Подтвержденных выводов ранее: {approved_count}",
+            f"📊 Подтвержденных выводов: {approved_count}/3",
             reply_markup=get_admin_withdraw_kb(),
             parse_mode="HTML"
         )
@@ -892,12 +716,16 @@ async def handle_admin_withdraw_buttons(call: types.CallbackQuery):
             current_count = db["users"][user_id].get("approved_withdraws", 0) + 1
             db["users"][user_id]["approved_withdraws"] = current_count
             save_db(db)
-            new_text = f"{original_text}\n\nСтатус: ✅ Подтверждено админом (Всего одобрено: {current_count})"
+
+            if current_count >= 3:
+                new_text = f"{original_text}\n\nСтатус: ✅ Подтверждено ({current_count}/3) — 🤖 АВТО-ВЫВОД АКТИВИРОВАН НАВСЕГДА!"
+            else:
+                new_text = f"{original_text}\n\nСтатус: ✅ Выведено вручную ({current_count}/3 до авто-вывода)"
         else:
-            new_text = f"{original_text}\n\nСтатус: ✅ Подтверждено"
+            new_text = f"{original_text}\n\nСтатус: ✅ Выведено"
 
         await call.message.edit_text(new_text, reply_markup=None)
-        await call.answer("✅ Заявка подтверждена!")
+        await call.answer("✅ Заявка подтверждена, счетчик обновлен!")
 
     elif call.data == "admin_reject":
         new_text = f"{original_text}\n\nСтатус: ❌ Отклонено"
@@ -959,6 +787,7 @@ async def adm_find_user_callback(call: types.CallbackQuery):
         parse_mode="HTML"
     )
 
+# === УПРАВЛЕНИЕ ЗАДАНИЯМИ В АДМИНКЕ ===
 @dp.callback_query(F.data == "adm_tasks_menu")
 async def adm_tasks_menu_callback(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
@@ -1070,7 +899,7 @@ async def adm_user_action_callback(call: types.CallbackQuery):
         user_states[call.from_user.id] = f"admin_balance_{action}_{target_id}"
         sign = "+" if action == "add" else "-"
         await call.message.answer(
-            f"⭐ Введи количество звезд для {sign} баланса юзера <code>{target_id}</code> (например, <code>0.30</code>):",
+            f"⭐ Введи количество звезд для {sign} баланса юзера <code>{target_id}</code> (можно с точкой или запятой, например: <code>0.30</code>):",
             parse_mode="HTML"
         )
         await call.answer()
@@ -1181,7 +1010,7 @@ async def broadcast_cmd(message: types.Message):
     )
 
 # === ТЕКСТОВЫЕ СОСТОЯНИЯ ===
-@dp.message(F.text & ~F.text.in_(["👤 Профиль", "🎁 Промокоды", "📋 Задания", "🛠 Поддержка"]))
+@dp.message(F.text & ~F.text.in_(["👤 Профиль", "🎫 Боевой Пропуск", "🎁 Промокоды", "📋 Задания", "🛠 Поддержка"]))
 async def text_handler(message: types.Message):
     user_id = str(message.from_user.id)
     db = load_db()
@@ -1203,7 +1032,7 @@ async def text_handler(message: types.Message):
                 stars = float(parts[1].replace(",", "."))
                 max_uses = int(parts[2])
             except ValueError:
-                await message.answer("❌ Звезды должны быть числом, а лимит — целым числом!")
+                await message.answer("❌ Звезды должны быть числом (например, 0.30), а лимит — целым числом!")
                 return
 
             db["promocodes"][code] = {"stars": stars, "max_uses": max_uses, "used_by": []}
@@ -1221,7 +1050,7 @@ async def text_handler(message: types.Message):
             try:
                 stars = float(parts[1].replace(",", "."))
             except ValueError:
-                await message.answer("❌ Сумма звезд должна быть числом!")
+                await message.answer("❌ Сумма звезд должна быть числом (например, 0.30 или 1,5)!")
                 return
 
             tasks = db.get("tasks", {})
@@ -1258,7 +1087,7 @@ async def text_handler(message: types.Message):
             try:
                 amount = float(message.text.strip().replace(",", "."))
             except ValueError:
-                await message.answer("❌ Введи число!")
+                await message.answer("❌ Введи число (например, 0.30 или 5)!")
                 return
 
             if target_id not in db["users"]:
