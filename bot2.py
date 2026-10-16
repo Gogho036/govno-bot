@@ -7,7 +7,11 @@ from datetime import datetime, timezone, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton, 
+    ReplyKeyboardMarkup, KeyboardButton, 
+    LabeledPrice, PreCheckoutQuery
+)
 
 # === НАСТРОЙКИ И ДАННЫЕ ===
 BOT_TOKEN = "8901920618:AAHVa3vOt7RreOd1d-WoF1JhXvN3WPbW-hA"
@@ -21,8 +25,7 @@ CHECK_CHANNEL = "@hyisag"
 SPONSORS = [
     {"name": "Спонсор 1", "url": "https://t.me/grasstj1", "check": "grasstj1"},
     {"name": "Спонсор 2", "url": "https://t.me/zuzxd", "check": "zuzxd"},
-    {"name": "Спонсор 3", "url": "https://telegram.me/linknibot/app?startapp=x_2xaaw", "check": ""},
-    {"name": "Спонсор 4", "url": "https://t.me/femboyvu", "check": "femboyvu"}
+    {"name": "Спонсор 3", "url": "https://t.me/femboyvu", "check": "femboyvu"}
 ]
 
 JSON_FILE = "users_db.json"
@@ -36,21 +39,18 @@ user_states = {}
 def get_ukraine_time():
     return datetime.now(timezone(timedelta(hours=3)))
 
-# Функция начисления реферала (разделение на БП и дневной топ)
+# Функция начисления реферала (в дневной топ идет строго с 11:00 до 21:00)
 def process_new_referral(db, ref_id):
     now = get_ukraine_time()
     today_str = now.date().isoformat()
     current_hour = now.hour
 
-    # Общий счетчик для Боевого Пропуска
     db["users"][ref_id]["referrals"] += 1
 
-    # Проверяем дату дневного топа
     if db["users"][ref_id].get("daily_ref_date") != today_str:
         db["users"][ref_id]["daily_ref_date"] = today_str
         db["users"][ref_id]["daily_referrals"] = 0
 
-    # В дневной топ засчитываем ТОЛЬКО если конкурс активен (с 11:00 до 21:00)
     if 11 <= current_hour < 21:
         db["users"][ref_id]["daily_referrals"] += 1
 
@@ -67,7 +67,7 @@ BP_LEVELS = [
     {"req": 100, "type": "title_mult", "value": 0.30, "title": "Правитель 👑", "text": "Звание «Правитель» (+0.30x к множителю) 🏛"}
 ]
 
-# === БАЗА ДАННЫХ ===
+# === СУПЕР-БАЗА ДАННЫХ (АТОМАРНОЕ СОХРАНЕНИЕ) ===
 def load_db():
     default_promos = {
         "FEMBOY": {"stars": 2, "max_uses": 50, "used_by": []},
@@ -101,20 +101,26 @@ def load_db():
             if "CEYS" not in data["promocodes"]:
                 data["promocodes"]["CEYS"] = {"min_stars": 1, "max_stars": 6, "max_uses": 500, "used_by": []}
             
-            # Проверка полей для старых юзеров
             for uid in data["users"]:
                 if "daily_referrals" not in data["users"][uid]:
                     data["users"][uid]["daily_referrals"] = 0
                 if "daily_ref_date" not in data["users"][uid]:
                     data["users"][uid]["daily_ref_date"] = ""
+                if "balance" not in data["users"][uid]:
+                    data["users"][uid]["balance"] = 0.0
+                if "referrals" not in data["users"][uid]:
+                    data["users"][uid]["referrals"] = 0
             save_db(data)
             return data
     except Exception:
         return {"users": {}, "promocodes": default_promos, "tasks": {}}
 
 def save_db(db_data):
-    with open(JSON_FILE, "w", encoding="utf-8") as f:
+    # Атомарная запись через временный файл — защищает от слётов при обновлении бота
+    temp_file = JSON_FILE + ".tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(db_data, f, ensure_ascii=False, indent=4)
+    os.replace(temp_file, JSON_FILE)
 
 # === РАСЧЁТ СТАТИСТИКИ И МНОЖИТЕЛЕЙ ===
 def get_user_stats(user_data):
@@ -142,7 +148,7 @@ def get_main_keyboard():
     kb = [
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Дневной топ")],
         [KeyboardButton(text="🎁 Промокоды"), KeyboardButton(text="📋 Задания")],
-        [KeyboardButton(text="🛠 Поддержка")]
+        [KeyboardButton(text="🎰 Казино"), KeyboardButton(text="🛠 Поддержка")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -233,7 +239,7 @@ async def start_cmd(message: types.Message):
         db["users"][user_id] = {
             "username": username,
             "first_name": first_name,
-            "balance": 0,
+            "balance": 0.0,
             "referrals": 0,
             "daily_referrals": 0,
             "daily_ref_date": "",
@@ -383,8 +389,8 @@ async def profile_sec(message: types.Message):
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
     db = load_db()
-    user_data = db["users"].get(user_id, {"balance": 0, "referrals": 0, "claimed_bp": []})
-    balance = user_data.get("balance", 0)
+    user_data = db["users"].get(user_id, {"balance": 0.0, "referrals": 0, "claimed_bp": []})
+    balance = user_data.get("balance", 0.0)
     refs = user_data.get("referrals", 0)
     
     mult, title = get_user_stats(user_data)
@@ -411,7 +417,7 @@ async def profile_sec(message: types.Message):
 async def withdraw_menu_callback(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
     db = load_db()
-    balance = db["users"].get(user_id, {}).get("balance", 0)
+    balance = db["users"].get(user_id, {}).get("balance", 0.0)
     text = (
         f"💸 <b>Раздел вывода звезд</b>\n\n"
         f"⭐ Твой баланс: <code>{balance}</code> звезд\n"
@@ -426,8 +432,8 @@ async def back_to_profile(call: types.CallbackQuery):
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
     db = load_db()
-    user_data = db["users"].get(user_id, {"balance": 0, "referrals": 0, "claimed_bp": []})
-    balance = user_data.get("balance", 0)
+    user_data = db["users"].get(user_id, {"balance": 0.0, "referrals": 0, "claimed_bp": []})
+    balance = user_data.get("balance", 0.0)
     refs = user_data.get("referrals", 0)
     
     mult, title = get_user_stats(user_data)
@@ -450,7 +456,119 @@ async def back_to_profile(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
-# === ДНЕВНОЙ ТОП (С ИСПРАВЛЕННЫМ СЧЕТЧИКОМ ЗА СЕГОДНЯ) ===
+# === КАЗИНО И ПОПОЛНЕНИЕ РЕАЛЬНЫХ ЗВЕЗД (XTR) ===
+@dp.message(F.text == "🎰 Казино")
+async def casino_main_menu(message: types.Message):
+    if not await check_access(message):
+        return
+    
+    db = load_db()
+    user_id = str(message.from_user.id)
+    balance = db["users"].get(user_id, {}).get("balance", 0.0)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Пополнить звезды (Telegram Stars)", callback_data="casino_topup_prompt")],
+        [
+            InlineKeyboardButton(text="🔴/🔵 Красное/Синее", callback_data="casino_game_1"),
+            InlineKeyboardButton(text="🎯 Кольцо", callback_data="casino_game_2")
+        ],
+        [InlineKeyboardButton(text="🎰 Рулетка", callback_data="casino_game_3")]
+    ])
+
+    text = (
+        f"🎰 <b>ИГРОВОЕ КАЗИНО ФЕМОК</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⭐ Твой игровой баланс: <code>{balance}</code> звезд\n\n"
+        f"<i>Пополняй реальные звезды Telegram (XTR), играй в игры и поднимай хыи! Выбирай режим ниже:</i>"
+    )
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@dp.callback_query(F.data == "casino_main")
+async def casino_main_callback(call: types.CallbackQuery):
+    db = load_db()
+    user_id = str(call.from_user.id)
+    balance = db["users"].get(user_id, {}).get("balance", 0.0)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Пополнить звезды (Telegram Stars)", callback_data="casino_topup_prompt")],
+        [
+            InlineKeyboardButton(text="🔴/🔵 Красное/Синее", callback_data="casino_game_1"),
+            InlineKeyboardButton(text="🎯 Кольцо", callback_data="casino_game_2")
+        ],
+        [InlineKeyboardButton(text="🎰 Рулетка", callback_data="casino_game_3")]
+    ])
+
+    text = (
+        f"🎰 <b>ИГРОВОЕ КАЗИНО ФЕМОК</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⭐ Твой игровой баланс: <code>{balance}</code> звезд\n\n"
+        f"<i>Выбирай игру ниже:</i>"
+    )
+    await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+# --- ПОПОЛНЕНИЕ РЕАЛЬНЫХ ЗВЕЗД ЧЕРЕЗ XTR ---
+@dp.callback_query(F.data == "casino_topup_prompt")
+async def casino_topup_prompt(call: types.CallbackQuery):
+    user_states[call.from_user.id] = "casino_wait_topup_amount"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в казино", callback_data="casino_main")]
+    ])
+    await call.message.edit_text(
+        "💳 <b>Пополнение игрового баланса звездами Telegram</b>\n\n"
+        "Введи количество звезд (целое число, например: <code>10</code> или <code>50</code>), которые хочешь внести в казино:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+# --- ИГРА 1: КРАСНОЕ / СИНЕЕ ---
+@dp.callback_query(F.data == "casino_game_1")
+async def casino_game_1_menu(call: types.CallbackQuery):
+    user_states[call.from_user.id] = "casino_g1_wait_bet"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в казино", callback_data="casino_main")]
+    ])
+    await call.message.edit_text(
+        "🔴🔵 <b>Игра 1: Красное / Синее</b>\n\n"
+        "• <b>Красный</b> — дает коэффициент <code>+0.30x</code> к ставке при победе.\n"
+        "• <b>Синий</b> — делит баланс пополам в случае проигрыша или дает удвоение.\n\n"
+        "Введи сумму ставки (например, <code>1</code> или <code>5</code>):",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+# --- ИГРА 2: КОЛЬЦО ---
+@dp.callback_query(F.data == "casino_game_2")
+async def casino_game_2_menu(call: types.CallbackQuery):
+    user_states[call.from_user.id] = "casino_g2_wait_bet"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в казино", callback_data="casino_main")]
+    ])
+    await call.message.edit_text(
+        "🎯 <b>Игра 2: Кольцо</b>\n\n"
+        "Правила:\n"
+        "- Ставишь «Не попаду» и промахиваешься — забираешь <code>1.10x</code>.\n"
+        "- Ставишь «Попаду» и попадаешь — получаешь <code>2x</code>!\n"
+        "- Ошибаешься в выборе — теряешь половину ставки.\n\n"
+        "Введи сумму ставки:",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+# --- ИГРА 3: РУЛЕТКА ---
+@dp.callback_query(F.data == "casino_game_3")
+async def casino_game_3_menu(call: types.CallbackQuery):
+    user_states[call.from_user.id] = "casino_g3_wait_bet"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад в казино", callback_data="casino_main")]
+    ])
+    await call.message.edit_text(
+        "🎰 <b>Игра 3: Рулетка</b>\n\n"
+        "Введи сумму ставки. После этого рулетка прокрутится, и тебе выпадет случайный множитель от <b>0.50x до 3.00x</b>!",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+# === ДНЕВНОЙ ТОП (С 11:00 ДО 21:00) ===
 @dp.message(F.text == "🏆 Дневной топ")
 async def daily_top_sec(message: types.Message):
     if not await check_access(message):
@@ -470,7 +588,6 @@ async def daily_top_sec(message: types.Message):
     db = load_db()
     users = db.get("users", {})
     
-    # Сортируем пользователей ТОЛЬКО по дневным рефералам за сегодня (если дата совпадает)
     sorted_users = sorted(
         users.items(),
         key=lambda x: x[1].get("daily_referrals", 0) if x[1].get("daily_ref_date") == today_str else 0,
@@ -506,7 +623,7 @@ async def daily_top_sec(message: types.Message):
     
     await message.answer(text, parse_mode="HTML")
 
-# === ФОНОВЫЙ ПЛАНИРОВЩИК (ПО УКРАИНСКОМУ ВРЕМЕНИ) ===
+# === ФОНОВЫЙ ПЛАНИРОВЩИК (СТАРТ 11:00, ИТОГИ 21:00) ===
 async def daily_contest_scheduler():
     last_notified_start = None
     last_notified_end = None
@@ -517,7 +634,6 @@ async def daily_contest_scheduler():
         hour = now.hour
         minute = now.minute
         
-        # 11:00 - Старт конкурса
         if hour == 11 and minute == 0 and last_notified_start != current_date:
             last_notified_start = current_date
             db = load_db()
@@ -528,13 +644,11 @@ async def daily_contest_scheduler():
                 except Exception:
                     pass
                     
-        # 21:00 - Окончание конкурса и автовыдача топ-5 по дневным рефералам
         if hour == 21 and minute == 0 and last_notified_end != current_date:
             last_notified_end = current_date
             db = load_db()
             users = db.get("users", {})
             
-            # Сортируем участников по рефкам за сегодня
             sorted_users = sorted(
                 users.items(),
                 key=lambda x: x[1].get("daily_referrals", 0) if x[1].get("daily_ref_date") == today_str else 0,
@@ -576,7 +690,7 @@ async def daily_contest_scheduler():
                 except Exception:
                     pass
                     
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
 
 # === БОЕВОЙ ПРОПУСК (BATTLE PASS) ===
 async def send_bp_menu(message_or_call, user_id, is_edit=False):
@@ -629,7 +743,7 @@ async def bp_claim_callback(call: types.CallbackQuery):
     
     db = load_db()
     if user_id not in db["users"]:
-        db["users"][user_id] = {"referrals": 0, "claimed_bp": [], "balance": 0}
+        db["users"][user_id] = {"referrals": 0, "claimed_bp": [], "balance": 0.0}
         
     user_data = db["users"][user_id]
     refs = user_data.get("referrals", 0)
@@ -688,7 +802,7 @@ async def bp_claim_callback(call: types.CallbackQuery):
 async def show_next_task(message_or_call, user_id, is_edit=False):
     db = load_db()
     if user_id not in db["users"]:
-        db["users"][user_id] = {"completed_tasks": [], "balance": 0}
+        db["users"][user_id] = {"completed_tasks": [], "balance": 0.0}
         save_db(db)
     
     completed = db["users"][user_id].get("completed_tasks", [])
@@ -744,7 +858,7 @@ async def task_confirm_callback(call: types.CallbackQuery):
     
     db = load_db()
     if user_id not in db["users"]:
-        db["users"][user_id] = {"completed_tasks": [], "balance": 0}
+        db["users"][user_id] = {"completed_tasks": [], "balance": 0.0}
         
     tasks = db.get("tasks", {})
     if task_id not in tasks:
@@ -781,7 +895,6 @@ async def support_sec(message: types.Message):
     user_states[message.from_user.id] = "support"
     await message.answer("🛠 <b>Служба поддержки</b>\n\nНапиши своё сообщение одним текстом:", parse_mode="HTML")
 
-# --- ОТВЕТ АДМИНА НА САППОРТ ЧЕРЕЗ КНОПКУ В ЛИЧКЕ ---
 @dp.callback_query(F.data.startswith("supp_ans_"))
 async def support_answer_callback(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
@@ -802,7 +915,7 @@ async def support_answer_callback(call: types.CallbackQuery):
         
     await call.answer("✅ Перейди в личные сообщения с ботом!", show_alert=True)
 
-# === ОБРАБОТКА ВЫВОДОВ (БЕЗ АВТОВЫВОДА) ===
+# === ОБРАБОТКА ВЫВОДОВ ===
 @dp.callback_query(F.data.startswith("withdraw_"))
 async def process_withdraw(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -813,7 +926,7 @@ async def process_withdraw(call: types.CallbackQuery):
         await call.answer("❌ Ты заблокирован!", show_alert=True)
         return
 
-    balance = db["users"].get(user_id, {}).get("balance", 0)
+    balance = db["users"].get(user_id, {}).get("balance", 0.0)
 
     if balance < amount:
         await call.answer(f"❌ Недостаточно средств! У тебя {balance} звезд, а нужно {amount}.", show_alert=True)
@@ -894,6 +1007,32 @@ async def handle_admin_withdraw_buttons(call: types.CallbackQuery):
         new_text = f"{original_text}\n\nСтатус: ❌ Отклонено"
         await call.message.edit_text(new_text, reply_markup=None)
         await call.answer("❌ Статус изменён на Отклонено!")
+
+# === ОБРАБОТКА ИНВОЙСОВ TELEGRAM STARS (XTR) ===
+@dp.pre_checkout_query()
+async def pre_checkout_handler(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def successful_payment_handler(message: types.Message):
+    payment = message.successful_payment
+    stars_paid = payment.total_amount # Количество оплаченных звезд XTR
+    user_id = str(message.from_user.id)
+    
+    db = load_db()
+    if user_id not in db["users"]:
+        db["users"][user_id] = {"balance": 0.0, "referrals": 0, "claimed_bp": []}
+    
+    db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + stars_paid, 2)
+    save_db(db)
+
+    await message.answer(
+        f"🎉 <b>Успешная оплата!</b>\n\n"
+        f"⭐ На твой игровой баланс зачислено: <b>+{stars_paid} звезд</b>!\n"
+        f"Теперь ты можешь ворваться в казино и сыграть в игры 🎰",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard()
+    )
 
 # === ОБРАБОТЧИКИ АДМИН-ПАНЕЛИ ===
 @dp.callback_query(F.data == "adm_stats")
@@ -1086,7 +1225,7 @@ async def show_user_admin_card(message_or_call, target_id, is_edit=False):
     uinfo = db["users"][target_id]
     uname = uinfo.get("username", "нет")
     fname = uinfo.get("first_name", "нет")
-    balance = uinfo.get("balance", 0)
+    balance = uinfo.get("balance", 0.0)
     refs = uinfo.get("referrals", 0)
     extra_mult = uinfo.get("extra_mult", 0.0)
     custom_title = uinfo.get("custom_title", "нет")
@@ -1194,8 +1333,8 @@ async def broadcast_cmd(message: types.Message):
         parse_mode="HTML"
     )
 
-# === ТЕКСТОВЫЕ СОСТОЯНИЯ ===
-@dp.message(F.text & ~F.text.in_(["👤 Профиль", "🏆 Дневной топ", "🎁 Промокоды", "📋 Задания", "🛠 Поддержка"]))
+# === ТЕКСТОВЫЕ СОСТОЯНИЯ И ИГРЫ КАЗИНО ===
+@dp.message(F.text & ~F.text.in_(["👤 Профиль", "🏆 Дневной топ", "🎁 Промокоды", "📋 Задания", "🎰 Казино", "🛠 Поддержка"]))
 async def text_handler(message: types.Message):
     user_id = str(message.from_user.id)
     db = load_db()
@@ -1203,6 +1342,132 @@ async def text_handler(message: types.Message):
         return
 
     state = user_states.get(message.from_user.id)
+
+    # ОБРАБОТКА ПОПОЛНЕНИЯ КАЗИНО ЧЕРЕЗ TELEGRAM STARS
+    if state == "casino_wait_topup_amount":
+        user_states.pop(message.from_user.id, None)
+        try:
+            amount = int(message.text.strip())
+            if amount <= 0:
+                raise ValueError()
+        except ValueError:
+            await message.answer("❌ Введи целое положительное число звезд (например, <code>10</code>):", parse_mode="HTML")
+            return
+
+        prices = [LabeledPrice(label="Звезды в казино", amount=amount)]
+        try:
+            await message.answer_invoice(
+                title="Пополнение баланса",
+                description=f"Покупка {amount} звезд для игры в казино",
+                payload="casino_stars_topup",
+                currency="XTR",
+                prices=prices
+            )
+        except Exception as e:
+            await message.answer(f"❌ Ошибка создания инвойса: {e}")
+        return
+
+    # ОБРАБОТКА ИГРЫ 1: КРАСНОЕ / СИНЕЕ
+    if state == "casino_g1_wait_bet":
+        user_states.pop(message.from_user.id, None)
+        try:
+            bet = float(message.text.strip().replace(",", "."))
+            if bet <= 0:
+                raise ValueError()
+        except ValueError:
+            await message.answer("❌ Введи корректную сумму ставки (например, <code>1.5</code>):", parse_mode="HTML")
+            return
+
+        user_bal = db["users"].get(user_id, {}).get("balance", 0.0)
+        if user_bal < bet:
+            await message.answer(f"❌ Недостаточно средств! У тебя на балансе <code>{user_bal}</code> звезд.", parse_mode="HTML")
+            return
+
+        user_states[message.from_user.id] = f"casino_g1_wait_choice_{bet}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔴 Красный (0.30x выигрыш)", callback_data="g1_red"),
+                InlineKeyboardButton(text="🔵 Синий (деление баланса)", callback_data="g1_blue")
+            ],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="casino_main")]
+        ])
+        await message.answer(
+            f"🎲 Ставка принята: <b>{bet} звезд</b>.\nТеперь выбери цвет:",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+        return
+
+    # ОБРАБОТКА ИГРЫ 2: КОЛЬЦО
+    if state == "casino_g2_wait_bet":
+        user_states.pop(message.from_user.id, None)
+        try:
+            bet = float(message.text.strip().replace(",", "."))
+            if bet <= 0:
+                raise ValueError()
+        except ValueError:
+            await message.answer("❌ Введи корректную сумму ставки:", parse_mode="HTML")
+            return
+
+        user_bal = db["users"].get(user_id, {}).get("balance", 0.0)
+        if user_bal < bet:
+            await message.answer(f"❌ Недостаточно средств! У тебя <code>{user_bal}</code> звезд.", parse_mode="HTML")
+            return
+
+        user_states[message.from_user.id] = f"casino_g2_wait_choice_{bet}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎯 Попаду", callback_data="g2_hit"),
+                InlineKeyboardButton(text="❌ Не попаду", callback_data="g2_miss")
+            ],
+            [InlineKeyboardButton(text="🏠 В казино", callback_data="casino_main")]
+        ])
+        await message.answer(
+            f"🎯 Ставка: <b>{bet} звезд</b>.\nСможешь попасть в кольцо?",
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+        return
+
+    # ОБРАБОТКА ИГРЫ 3: РУЛЕТКА
+    if state == "casino_g3_wait_bet":
+        user_states.pop(message.from_user.id, None)
+        try:
+            bet = float(message.text.strip().replace(",", "."))
+            if bet <= 0:
+                raise ValueError()
+        except ValueError:
+            await message.answer("❌ Введи корректную сумму ставки:", parse_mode="HTML")
+            return
+
+        user_bal = db["users"].get(user_id, {}).get("balance", 0.0)
+        if user_bal < bet:
+            await message.answer(f"❌ Недостаточно средств! У тебя <code>{user_bal}</code> звезд.", parse_mode="HTML")
+            return
+
+        # Списываем ставку
+        db["users"][user_id]["balance"] = round(user_bal - bet, 2)
+        save_db(db)
+
+        spin_msg = await message.answer("🎰 <b>Крутим рулетку...</b> 🎲", parse_mode="HTML")
+        await asyncio.sleep(0.6)
+
+        mult = round(random.uniform(0.50, 3.00), 2)
+        win_amount = round(bet * mult, 2)
+
+        db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + win_amount, 2)
+        save_db(db)
+
+        new_bal = db["users"][user_id]["balance"]
+        await spin_msg.edit_text(
+            f"🎰 <b>Результат рулетки!</b>\n\n"
+            f"⭐ Выпал множитель: <code>{mult}x</code>\n"
+            f"💰 Выигрыш: <b>+{win_amount} звезд</b>\n"
+            f"💳 Баланс: <code>{new_bal}</code> звезд",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 Ещё раз / В казино", callback_data="casino_main")]]),
+            parse_mode="HTML"
+        )
+        return
 
     # ОБРАБОТКА СОСТОЯНИЙ АДМИНА
     if message.from_user.id in ADMIN_IDS and state:
@@ -1237,12 +1502,12 @@ async def text_handler(message: types.Message):
                 stars = float(parts[1].replace(",", "."))
                 max_uses = int(parts[2])
             except ValueError:
-                await message.answer("❌ Звезды должны быть числом (например, 0.30), а лимит — целым числом!")
+                await message.answer("❌ Звезды должны быть числом, а лимит — целым числом!")
                 return
 
             db["promocodes"][code] = {"stars": stars, "max_uses": max_uses, "used_by": []}
             save_db(db)
-            await message.answer(f"✅ Промокод <code>{code}</code> успешно создан! Награда: {stars} звезд, лимит: {max_uses}.", parse_mode="HTML")
+            await message.answer(f"✅ Промокод <code>{code}</code> успешно создан!", parse_mode="HTML")
             return
 
         elif state == "admin_wait_task_data":
@@ -1255,7 +1520,7 @@ async def text_handler(message: types.Message):
             try:
                 stars = float(parts[1].replace(",", "."))
             except ValueError:
-                await message.answer("❌ Сумма звезд должна быть числом (например, 0.30 или 1,5)!")
+                await message.answer("❌ Сумма звезд должна быть числом!")
                 return
 
             tasks = db.get("tasks", {})
@@ -1263,7 +1528,7 @@ async def text_handler(message: types.Message):
             tasks[new_id] = {"url": url, "stars": stars}
             db["tasks"] = tasks
             save_db(db)
-            await message.answer(f"✅ Задание #{new_id} успешно добавлено! Ссылка: {url}, Награда: {stars} ⭐", parse_mode="HTML")
+            await message.answer(f"✅ Задание #{new_id} успешно добавлено!", parse_mode="HTML")
             return
 
         elif state == "admin_wait_user_query":
@@ -1292,7 +1557,7 @@ async def text_handler(message: types.Message):
             try:
                 amount = float(message.text.strip().replace(",", "."))
             except ValueError:
-                await message.answer("❌ Введи число (например, 0.30 или 5)!")
+                await message.answer("❌ Введи число!")
                 return
 
             if target_id not in db["users"]:
@@ -1318,7 +1583,7 @@ async def text_handler(message: types.Message):
                 return
             db["users"][target_id]["custom_title"] = new_title
             save_db(db)
-            await message.answer(f"✅ Звание юзера <code>{target_id}</code> успешно изменено на: <b>{new_title}</b>", parse_mode="HTML")
+            await message.answer(f"✅ Звание юзера изменено на: <b>{new_title}</b>", parse_mode="HTML")
             return
 
         elif state.startswith("admin_wait_mult_"):
@@ -1327,14 +1592,14 @@ async def text_handler(message: types.Message):
             try:
                 extra_mult = float(message.text.strip().replace(",", "."))
             except ValueError:
-                await message.answer("❌ Введи число (например, 0.5)!")
+                await message.answer("❌ Введи число!")
                 return
             if target_id not in db["users"]:
                 await message.answer("❌ Ошибка: пользователь пропал из базы.")
                 return
             db["users"][target_id]["extra_mult"] = extra_mult
             save_db(db)
-            await message.answer(f"✅ Дополнительный икс юзера <code>{target_id}</code> установлен на: <code>+{extra_mult}x</code>", parse_mode="HTML")
+            await message.answer(f"✅ Дополнительный икс юзера установлен на: <code>+{extra_mult}x</code>", parse_mode="HTML")
             return
 
     # Обычные состояния
@@ -1403,6 +1668,130 @@ async def text_handler(message: types.Message):
     else:
         await message.answer("Используй кнопки меню ниже 👇", reply_markup=get_main_keyboard())
 
+# --- КОЛБЭКИ ИГР КАЗИНО ---
+@dp.callback_query(F.data.in_(["g1_red", "g1_blue"]))
+async def casino_g1_handler(call: types.CallbackQuery):
+    user_id = str(call.from_user.id)
+    state = user_states.get(call.from_user.id)
+    if not state or not state.startswith("casino_g1_wait_choice_"):
+        await call.answer("❌ Сессия устарела. Начни заново!", show_alert=True)
+        return
+
+    bet = float(state.split("_")[4])
+    user_states.pop(call.from_user.id, None)
+
+    db = load_db()
+    user_bal = db["users"].get(user_id, {}).get("balance", 0.0)
+    if user_bal < bet:
+        await call.answer("❌ Недостаточно средств!", show_alert=True)
+        return
+
+    choice = call.data # g1_red или g1_blue
+    win = random.choice([True, False])
+
+    if choice == "g1_red":
+        if win:
+            reward = round(bet * 0.30, 2)
+            db["users"][user_id]["balance"] = round(user_bal + reward, 2)
+            save_db(db)
+            await call.message.edit_text(
+                f"🔴 <b>Красное выиграло!</b>\n\n"
+                f"⭐ Тебе начислено: <b>+{reward} звезд</b> (0.30x)\n"
+                f"💳 Баланс: <code>{db['users'][user_id]['balance']}</code> звезд",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+                parse_mode="HTML"
+            )
+        else:
+            db["users"][user_id]["balance"] = round(user_bal - bet, 2)
+            save_db(db)
+            await call.message.edit_text(
+                f"🔴 <b>Красное проиграло!</b>\n\n"
+                f"❌ Списано со ставки: <b>-{bet} звезд</b>\n"
+                f"💳 Баланс: <code>{db['users'][user_id]['balance']}</code> звезд",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+                parse_mode="HTML"
+            )
+    else: # g1_blue (синий: поделить баланс вдвое)
+        new_bal = round(user_bal / 2, 2)
+        db["users"][user_id]["balance"] = new_bal
+        save_db(db)
+        await call.message.edit_text(
+            f"🔵 <b>Синий сектор!</b>\n\n"
+            f"⚠️ Баланс поделен пополам!\n"
+            f"💳 Твой новый баланс: <code>{new_bal}</code> звезд",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+            parse_mode="HTML"
+        )
+
+@dp.callback_query(F.data.in_(["g2_hit", "g2_miss"]))
+async def casino_g2_handler(call: types.CallbackQuery):
+    user_id = str(call.from_user.id)
+    state = user_states.get(call.from_user.id)
+    if not state or not state.startswith("casino_g2_wait_choice_"):
+        await call.answer("❌ Сессия устарела. Начни заново!", show_alert=True)
+        return
+
+    bet = float(state.split("_")[4])
+    user_states.pop(call.from_user.id, None)
+
+    db = load_db()
+    user_bal = db["users"].get(user_id, {}).get("balance", 0.0)
+    if user_bal < bet:
+        await call.answer("❌ Недостаточно средств!", show_alert=True)
+        return
+
+    choice = call.data # g2_hit (попаду) или g2_miss (не попаду)
+    is_hit = random.choice([True, False])
+
+    if choice == "g2_miss":
+        if not is_hit:
+            # Угадал, что не попадет -> 1.10x
+            reward = round(bet * 1.10, 2)
+            db["users"][user_id]["balance"] = round(user_bal + reward, 2)
+            save_db(db)
+            await call.message.edit_text(
+                f"🎯❌ <b>Ты угадал! Мяч пролетел мимо!</b>\n\n"
+                f"⭐ Награда (1.10x): <b>+{reward} звезд</b>\n"
+                f"💳 Баланс: <code>{db['users'][user_id]['balance']}</code> звезд",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+                parse_mode="HTML"
+            )
+        else:
+            # Ошибся, попал в кольцо -> проебываем баланс вдвое
+            new_bal = round(user_bal / 2, 2)
+            db["users"][user_id]["balance"] = new_bal
+            save_db(db)
+            await call.message.edit_text(
+                f"🎯⚠️ <b>Мяч залетел в кольцо!</b> Ты ставил, что не попадешь.\n\n"
+                f"📉 Баланс уменьшен вдвое: <code>{new_bal}</code> звезд",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+                parse_mode="HTML"
+            )
+    else: # g2_hit (попаду)
+        if is_hit:
+            # Попал -> x2
+            db["users"][user_id]["balance"] = round(user_bal + bet, 2)
+            save_db(db)
+            await call.message.edit_text(
+                f"🎯🔥 <b>Точное попадание в кольцо!</b>\n\n"
+                f"⭐ Твой выигрыш (x2): <b>+{bet} звезд</b> к ставке!\n"
+                f"💳 Баланс: <code>{db['users'][user_id]['balance']}</code> звезд",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+                parse_mode="HTML"
+            )
+        else:
+            # Промазал -> проебываем вдвое меньше / теряем половину
+            lost = round(bet / 2, 2)
+            db["users"][user_id]["balance"] = round(user_bal - lost, 2)
+            save_db(db)
+            await call.message.edit_text(
+                f"🎯❌ <b>Промах!</b> Ты ставил на попадание, но промазал.\n\n"
+                f"📉 Списано вдвое меньше ставки: <b>-{lost} звезд</b>\n"
+                f"💳 Баланс: <code>{db['users'][user_id]['balance']}</code> звезд",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎰 В казино", callback_data="casino_main")]]),
+                parse_mode="HTML"
+            )
+
 # === МИКРО ВЕБ-СЕРВЕР ДЛЯ UPTIMEROBOT ===
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
@@ -1417,7 +1806,7 @@ async def start_web_server():
     await site.start()
 
 async def main():
-    print("Бот и веб-сервер запущены!")
+    print("Бот, веб-сервер и супер-сохранения запущены!")
     await start_web_server()
     asyncio.create_task(daily_contest_scheduler())
     await dp.start_polling(bot)
