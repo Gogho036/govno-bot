@@ -25,7 +25,7 @@ CHECK_CHANNEL = "@hyisag"
 SPONSORS = [
     {"name": "Спонсор 1", "url": "https://t.me/grasstj1", "check": "grasstj1"},
     {"name": "Спонсор 2", "url": "https://t.me/zuzxd", "check": "zuzxd"},
-    {"name": "Спонсор 3", "url": "https://t.me/femboyvu", "check": "femboyvu"}
+    {"name": "Спонсор 3", "url": "t.me/cnype", "check": ""}
 ]
 
 JSON_FILE = "users_db.json"
