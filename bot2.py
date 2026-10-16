@@ -35,6 +35,24 @@ user_states = {}
 def get_ukraine_time():
     return datetime.now(timezone(timedelta(hours=3)))
 
+# Функция начисления реферала (разделение на БП и дневной топ)
+def process_new_referral(db, ref_id):
+    now = get_ukraine_time()
+    today_str = now.date().isoformat()
+    current_hour = now.hour
+
+    # Общий счетчик для Боевого Пропуска
+    db["users"][ref_id]["referrals"] += 1
+
+    # Проверяем дату дневного топа
+    if db["users"][ref_id].get("daily_ref_date") != today_str:
+        db["users"][ref_id]["daily_ref_date"] = today_str
+        db["users"][ref_id]["daily_referrals"] = 0
+
+    # В дневной топ засчитываем ТОЛЬКО если конкурс активен (с 11:00 до 21:00)
+    if 11 <= current_hour < 21:
+        db["users"][ref_id]["daily_referrals"] += 1
+
 # === СТУПЕНИ БОЕВОГО ПРОПУСКА (BATTLE PASS) ===
 BP_LEVELS = [
     {"req": 5, "type": "stars", "value": 3, "text": "3 ⭐️ Звезды"},
@@ -81,7 +99,14 @@ def load_db():
                 data["promocodes"]["ADMIN"] = {"stars": 7, "max_uses": 1, "used_by": []}
             if "CEYS" not in data["promocodes"]:
                 data["promocodes"]["CEYS"] = {"min_stars": 1, "max_stars": 6, "max_uses": 500, "used_by": []}
-                save_db(data)
+            
+            # Проверка полей для старых юзеров
+            for uid in data["users"]:
+                if "daily_referrals" not in data["users"][uid]:
+                    data["users"][uid]["daily_referrals"] = 0
+                if "daily_ref_date" not in data["users"][uid]:
+                    data["users"][uid]["daily_ref_date"] = ""
+            save_db(data)
             return data
     except Exception:
         return {"users": {}, "promocodes": default_promos, "tasks": {}}
@@ -209,6 +234,8 @@ async def start_cmd(message: types.Message):
             "first_name": first_name,
             "balance": 0,
             "referrals": 0,
+            "daily_referrals": 0,
+            "daily_ref_date": "",
             "referred_by": referrer_id,
             "completed_tasks": [],
             "is_subscribed": False,
@@ -234,6 +261,10 @@ async def start_cmd(message: types.Message):
             db["users"][user_id]["extra_mult"] = 0.0
         if "custom_title" not in db["users"][user_id]:
             db["users"][user_id]["custom_title"] = None
+        if "daily_referrals" not in db["users"][user_id]:
+            db["users"][user_id]["daily_referrals"] = 0
+        if "daily_ref_date" not in db["users"][user_id]:
+            db["users"][user_id]["daily_ref_date"] = ""
         if not db["users"][user_id].get("referred_by") and referrer_id:
             db["users"][user_id]["referred_by"] = referrer_id
 
@@ -257,7 +288,7 @@ async def start_cmd(message: types.Message):
         db["users"][user_id]["ref_bonus_given"] = True
         ref_id = db["users"][user_id].get("referred_by")
         if ref_id and ref_id in db["users"]:
-            db["users"][ref_id]["referrals"] += 1
+            process_new_referral(db, ref_id)
             ref_mult, _ = get_user_stats(db["users"][ref_id])
             earned_stars = round(2 * ref_mult, 2)
             db["users"][ref_id]["balance"] = round(db["users"][ref_id]["balance"] + earned_stars, 2)
@@ -321,7 +352,7 @@ async def check_sub_callback(call: types.CallbackQuery):
                 db["users"][user_id]["ref_bonus_given"] = True
                 ref_id = db["users"][user_id].get("referred_by")
                 if ref_id and ref_id in db["users"]:
-                    db["users"][ref_id]["referrals"] += 1
+                    process_new_referral(db, ref_id)
                     ref_mult, _ = get_user_stats(db["users"][ref_id])
                     earned_stars = round(2 * ref_mult, 2)
                     db["users"][ref_id]["balance"] = round(db["users"][ref_id]["balance"] + earned_stars, 2)
@@ -418,7 +449,7 @@ async def back_to_profile(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
-# === ДНЕВНОЙ ТОП (С УКРАИНСКИМ ВРЕМЕНЕМ UTC+3) ===
+# === ДНЕВНОЙ ТОП (С ИСПРАВЛЕННЫМ СЧЕТЧИКОМ ЗА СЕГОДНЯ) ===
 @dp.message(F.text == "🏆 Дневной топ")
 async def daily_top_sec(message: types.Message):
     if not await check_access(message):
@@ -426,6 +457,7 @@ async def daily_top_sec(message: types.Message):
     
     now = get_ukraine_time()
     current_hour = now.hour
+    today_str = now.date().isoformat()
     
     if current_hour < 11:
         await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс ещё не начался! Старт каждый день ровно в 11:00 по Полтаве.", parse_mode="HTML")
@@ -437,9 +469,10 @@ async def daily_top_sec(message: types.Message):
     db = load_db()
     users = db.get("users", {})
     
+    # Сортируем пользователей ТОЛЬКО по дневным рефералам за сегодня (если дата совпадает)
     sorted_users = sorted(
         users.items(),
-        key=lambda x: x[1].get("referrals", 0),
+        key=lambda x: x[1].get("daily_referrals", 0) if x[1].get("daily_ref_date") == today_str else 0,
         reverse=True
     )[:10]
     
@@ -454,19 +487,21 @@ async def daily_top_sec(message: types.Message):
         f"4️⃣ 4 место: 10 звезд ⭐\n"
         f"5️⃣ 5 место: 5 звезд ⭐\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Топ-10 участников:</b>\n\n"
+        f"📊 <b>Топ-10 участников за сегодня:</b>\n\n"
     )
     
-    if not sorted_users or all(u[1].get("referrals", 0) == 0 for u in sorted_users):
-        text += "<i>Пока никто никого не пригласил. Ворвись в топ первым!</i>"
+    active_sorted = [u for u in sorted_users if u[1].get("daily_ref_date") == today_str and u[1].get("daily_referrals", 0) > 0]
+    
+    if not active_sorted:
+        text += "<i>Сегодня пока никто никого не пригласил. Ворвись в топ первым!</i>"
     else:
-        for i, (uid, udata) in enumerate(sorted_users, 1):
+        for i, (uid, udata) in enumerate(active_sorted, 1):
             name = udata.get("first_name", "Без имени")
             username = udata.get("username", "нет")
-            refs = udata.get("referrals", 0)
+            daily_refs = udata.get("daily_referrals", 0)
             
             medal = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else f"<b>{i}.</b>"))
-            text += f"{medal} {name} ({username}) — <b>{refs}</b> реф.\n"
+            text += f"{medal} {name} ({username}) — <b>{daily_refs}</b> реф. за сегодня\n"
     
     await message.answer(text, parse_mode="HTML")
 
@@ -477,6 +512,7 @@ async def daily_contest_scheduler():
     while True:
         now = get_ukraine_time()
         current_date = now.date()
+        today_str = current_date.isoformat()
         hour = now.hour
         minute = now.minute
         
@@ -491,28 +527,35 @@ async def daily_contest_scheduler():
                 except Exception:
                     pass
                     
-        # 21:00 - Окончание конкурса и автовыдача топ-5
+        # 21:00 - Окончание конкурса и автовыдача топ-5 по дневным рефералам
         if hour == 21 and minute == 0 and last_notified_end != current_date:
             last_notified_end = current_date
             db = load_db()
             users = db.get("users", {})
             
+            # Сортируем участников по рефкам за сегодня
             sorted_users = sorted(
                 users.items(),
-                key=lambda x: x[1].get("referrals", 0),
+                key=lambda x: x[1].get("daily_referrals", 0) if x[1].get("daily_ref_date") == today_str else 0,
                 reverse=True
             )
             
             prizes = {1: 50, 2: 25, 3: 15, 4: 10, 5: 5}
-            winners_text = "🏁 <b>Дневной конкурс завершен! Итоги топ-5:</b>\n\n"
+            winners_text = "🏁 <b>Дневной конкурс завершен! Итоги топ-5 за сегодня:</b>\n\n"
             
+            awarded_count = 0
             for i in range(1, 6):
                 if i <= len(sorted_users):
                     uid, udata = sorted_users[i - 1]
+                    daily_refs = udata.get("daily_referrals", 0) if udata.get("daily_ref_date") == today_str else 0
+                    if daily_refs <= 0:
+                        break
+                        
                     prize = prizes[i]
                     db["users"][uid]["balance"] = round(db["users"][uid]["balance"] + prize, 2)
                     name = udata.get("first_name", "Тип")
-                    winners_text += f"{i} место: {name} — +{prize} звезд ⭐\n"
+                    winners_text += f"{i} место: {name} ({daily_refs} реф.) — +{prize} звезд ⭐\n"
+                    awarded_count += 1
                     try:
                         await bot.send_message(int(uid), f"🎉 <b>Поздравляю!</b> Ты занял {i} место в дневном топе и тебе автоматически начислено <b>{prize} звезд ⭐</b>!", parse_mode="HTML")
                     except Exception:
@@ -520,6 +563,9 @@ async def daily_contest_scheduler():
                 else:
                     break
                     
+            if awarded_count == 0:
+                winners_text += "<i>Никто не пригласил участников за время конкурса. Призы не выданы.</i>"
+                
             save_db(db)
             
             for uid in db.get("users", {}).keys():
@@ -542,7 +588,7 @@ async def send_bp_menu(message_or_call, user_id, is_edit=False):
     bp_text = (
         f"🎫 <b>БОЕВОЙ ПРОПУСК (BATTLE PASS)</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👥 Приглашено друзей: <b>{refs}</b>\n"
+        f"👥 Приглашено друзей (всего): <b>{refs}</b>\n"
         f"🎖 Твоё звание: <b>{title}</b>\n"
         f"⚡️ Твой множитель: <code>{mult}x</code>\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
@@ -1053,7 +1099,7 @@ async def show_user_admin_card(message_or_call, target_id, is_edit=False):
         f"👤 Имя: {fname}\n"
         f"🏷 Юзернейм: {uname}\n"
         f"⭐ Баланс: <code>{balance}</code> звезд\n"
-        f"👥 Рефералов: <code>{refs}</code>\n"
+        f"👥 Рефералов (всего): <code>{refs}</code>\n"
         f"⚡️ Доп. икс: <code>+{extra_mult}x</code>\n"
         f"🎖 Кастом. звание: <code>{custom_title}</code>\n"
         f"📌 Статус: {'🔴 Заблокирован' if banned else '🟢 Активен'}\n"
