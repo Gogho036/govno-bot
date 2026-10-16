@@ -202,7 +202,6 @@ async def start_cmd(message: types.Message):
             "is_subscribed": False,
             "ref_bonus_given": False,
             "activated_codes": [],
-            "approved_withdraws": 0,
             "claimed_bp": [],
             "is_banned": False
         }
@@ -211,8 +210,6 @@ async def start_cmd(message: types.Message):
         db["users"][user_id]["first_name"] = first_name
         if "ref_bonus_given" not in db["users"][user_id]:
             db["users"][user_id]["ref_bonus_given"] = False
-        if "approved_withdraws" not in db["users"][user_id]:
-            db["users"][user_id]["approved_withdraws"] = 0
         if "claimed_bp" not in db["users"][user_id]:
             db["users"][user_id]["claimed_bp"] = []
         if "completed_tasks" not in db["users"][user_id]:
@@ -594,7 +591,7 @@ async def support_sec(message: types.Message):
     user_states[message.from_user.id] = "support"
     await message.answer("🛠 <b>Служба поддержки</b>\n\nНапиши своё сообщение одним текстом:", parse_mode="HTML")
 
-# === ОБРАБОТКА ВЫВОДОВ ===
+# === ОБРАБОТКА ВЫВОДОВ (БЕЗ АВТОВЫВОДА) ===
 @dp.callback_query(F.data.startswith("withdraw_"))
 async def process_withdraw(call: types.CallbackQuery):
     user_id = str(call.from_user.id)
@@ -617,32 +614,6 @@ async def process_withdraw(call: types.CallbackQuery):
     user_name = call.from_user.full_name
     username = f"@{call.from_user.username}" if call.from_user.username else "нет юзернейма"
     item_desc = "Telegram Premium на 3 месяца 🌟" if amount == 1000 else f"{amount} звезд"
-    
-    approved_count = db["users"][user_id].get("approved_withdraws", 0)
-
-    if approved_count >= 3:
-        try:
-            await bot.send_message(
-                WITHDRAW_CHANNEL,
-                f"🤖 <b>АВТО-ВЫВОД СРАБОТАЛ (Доверенный тип)!</b>\n\n"
-                f"🆔 ID: {user_id}\n"
-                f"👤 Пользователь: {user_name} ({username})\n"
-                f"⭐ Сумма: {amount} звезд\n"
-                f"🎁 Товар: {item_desc}\n"
-                f"⚡ Успешных выводов до этого: {approved_count}",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logging.error(f"Ошибка логирования авто-вывода: {e}")
-
-        await call.message.edit_text(
-            f"✅ <b>Заявка успешно выполнена автоматически!</b>\n\n"
-            f"Списано: <code>{amount}</code> звезд ⭐\n"
-            f"Товар: <code>{item_desc}</code>\n"
-            f"🤖 Подарок отправлен на ваш аккаунт.",
-            parse_mode="HTML"
-        )
-        return
 
     try:
         await bot.send_message(
@@ -651,8 +622,7 @@ async def process_withdraw(call: types.CallbackQuery):
             f"🆔 ID: {user_id}\n"
             f"👤 Пользователь: {user_name} ({username})\n"
             f"⭐ Сумма: {amount} звезд\n"
-            f"🎁 Товар: {item_desc}\n"
-            f"📊 Подтвержденных выводов: {approved_count}/3",
+            f"🎁 Товар: {item_desc}",
             reply_markup=get_admin_withdraw_kb(),
             parse_mode="HTML"
         )
@@ -703,29 +673,11 @@ async def handle_admin_withdraw_buttons(call: types.CallbackQuery):
         return
 
     original_text = call.message.text
-    lines = original_text.split("\n")
-    user_id = None
-    for line in lines:
-        if "🆔 ID:" in line or "ID:" in line:
-            user_id = line.split("ID:")[1].strip()
-            break
 
     if call.data == "admin_approve":
-        db = load_db()
-        if user_id and user_id in db["users"]:
-            current_count = db["users"][user_id].get("approved_withdraws", 0) + 1
-            db["users"][user_id]["approved_withdraws"] = current_count
-            save_db(db)
-
-            if current_count >= 3:
-                new_text = f"{original_text}\n\nСтатус: ✅ Подтверждено ({current_count}/3) — 🤖 АВТО-ВЫВОД АКТИВИРОВАН НАВСЕГДА!"
-            else:
-                new_text = f"{original_text}\n\nСтатус: ✅ Выведено вручную ({current_count}/3 до авто-вывода)"
-        else:
-            new_text = f"{original_text}\n\nСтатус: ✅ Выведено"
-
+        new_text = f"{original_text}\n\nСтатус: ✅ Подтверждено администратором"
         await call.message.edit_text(new_text, reply_markup=None)
-        await call.answer("✅ Заявка подтверждена, счетчик обновлен!")
+        await call.answer("✅ Заявка подтверждена!")
 
     elif call.data == "admin_reject":
         new_text = f"{original_text}\n\nСтатус: ❌ Отклонено"
