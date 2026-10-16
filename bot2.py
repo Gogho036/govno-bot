@@ -423,7 +423,6 @@ async def daily_top_sec(message: types.Message):
     now = datetime.now()
     current_hour = now.hour
     
-    # Проверка времени конкурса (с 11:00 до 21:00)
     if current_hour < 11:
         await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс ещё не начался! Старт каждый день в 11:00.", parse_mode="HTML")
         return
@@ -477,7 +476,6 @@ async def daily_contest_scheduler():
         hour = now.hour
         minute = now.minute
         
-        # 11:00 - Оповещение о старте конкурса
         if hour == 11 and minute == 0 and last_notified_start != current_date:
             last_notified_start = current_date
             db = load_db()
@@ -488,7 +486,6 @@ async def daily_contest_scheduler():
                 except Exception:
                     pass
                     
-        # 21:00 - Окончание конкурса и автоматическая выдача наград топ-5
         if hour == 21 and minute == 0 and last_notified_end != current_date:
             last_notified_end = current_date
             db = load_db()
@@ -519,7 +516,6 @@ async def daily_contest_scheduler():
                     
             save_db(db)
             
-            # Рассылка итогов всем участникам
             for uid in db.get("users", {}).keys():
                 try:
                     await bot.send_message(int(uid), winners_text, parse_mode="HTML")
@@ -527,7 +523,7 @@ async def daily_contest_scheduler():
                 except Exception:
                     pass
                     
-        await asyncio.sleep(30) # Проверка каждые 30 секунд
+        await asyncio.sleep(30)
 
 # === БОЕВОЙ ПРОПУСК (BATTLE PASS) ===
 async def send_bp_menu(message_or_call, user_id, is_edit=False):
@@ -731,6 +727,20 @@ async def support_sec(message: types.Message):
         return
     user_states[message.from_user.id] = "support"
     await message.answer("🛠 <b>Служба поддержки</b>\n\nНапиши своё сообщение одним текстом:", parse_mode="HTML")
+
+# --- ОТВЕТ АДМИНА НА САППОРТ ЧЕРЕЗ КНОПКУ ---
+@dp.callback_query(F.data.startswith("supp_ans_"))
+async def support_answer_callback(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("❌ У тебя нет прав!", show_alert=True)
+        return
+    target_id = call.data.split("_")[2]
+    user_states[call.from_user.id] = f"supp_reply_{target_id}"
+    await call.message.answer(
+        f"✍️ Напиши ответ для пользователя с ID <code>{target_id}</code> одним сообщением:",
+        parse_mode="HTML"
+    )
+    await call.answer()
 
 # === ОБРАБОТКА ВЫВОДОВ (БЕЗ АВТОВЫВОДА) ===
 @dp.callback_query(F.data.startswith("withdraw_"))
@@ -1136,7 +1146,27 @@ async def text_handler(message: types.Message):
 
     # ОБРАБОТКА СОСТОЯНИЙ АДМИНА
     if message.from_user.id in ADMIN_IDS and state:
-        if state == "admin_wait_promo":
+        if state.startswith("supp_reply_"):
+            target_id = state.split("_")[2]
+            user_states.pop(message.from_user.id, None)
+            answer_text = message.text.strip()
+            
+            try:
+                await bot.send_message(
+                    int(target_id),
+                    f"🛠 <b>Ответ от Службы Поддержки</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"💬 <b>Сообщение:</b>\n{answer_text}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"✨ <i>Если возникнут еще вопросы — пиши снова!</i>",
+                    parse_mode="HTML"
+                )
+                await message.answer(f"✅ Ответ успешно отправлен пользователю <code>{target_id}</code>!", parse_mode="HTML")
+            except Exception as e:
+                await message.answer(f"❌ Ошибка отправки пользователю: {e}")
+            return
+
+        elif state == "admin_wait_promo":
             user_states.pop(message.from_user.id, None)
             parts = message.text.strip().split()
             if len(parts) < 3:
@@ -1261,7 +1291,6 @@ async def text_handler(message: types.Message):
             else:
                 promo["used_by"].append(user_id)
                 
-                # Рандомный дроп со спец-анимацией для CEYS
                 if "min_stars" in promo and "max_stars" in promo:
                     anim_msg = await message.answer("🎁 <b>Открываем кейс Ceys...</b>\n\n🎲 Крутим барабан: 1 ⭐", parse_mode="HTML")
                     await asyncio.sleep(0.4)
@@ -1296,9 +1325,16 @@ async def text_handler(message: types.Message):
         user_name = message.from_user.full_name
         username = f"@{message.from_user.username}" if message.from_user.username else "нет юзернейма"
         try:
+            support_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💬 Ответить", callback_data=f"supp_ans_{user_id}")]
+            ])
             await bot.send_message(
                 SUPPORT_CHANNEL,
-                f"📩 <b>Новое обращение в поддержку!</b>\n\n🆔 ID: {user_id}\n👤 Пользователь: {user_name} ({username})\n💬 Текст: {message.text}",
+                f"📩 <b>Новое обращение в поддержку!</b>\n\n"
+                f"🆔 ID: <code>{user_id}</code>\n"
+                f"👤 Пользователь: {user_name} ({username})\n"
+                f"💬 Текст: {message.text}",
+                reply_markup=support_kb,
                 parse_mode="HTML"
             )
             await message.answer("✅ Твоё сообщение отправлено в поддержку!")
@@ -1323,7 +1359,6 @@ async def start_web_server():
 async def main():
     print("Бот и веб-сервер запущены!")
     await start_web_server()
-    # Запуск фонового планировщика для дневного топа
     asyncio.create_task(daily_contest_scheduler())
     await dp.start_polling(bot)
 
