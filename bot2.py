@@ -3,7 +3,7 @@ import logging
 import json
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -30,6 +30,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 user_states = {}
+
+# Время по Украине (Полтава/Киев: UTC+3)
+def get_ukraine_time():
+    return datetime.now(timezone(timedelta(hours=3)))
 
 # === СТУПЕНИ БОЕВОГО ПРОПУСКА (BATTLE PASS) ===
 BP_LEVELS = [
@@ -414,17 +418,17 @@ async def back_to_profile(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
-# === ДНЕВНОЙ ТОП (С ПРОВЕРКОЙ ВРЕМЕНИ) ===
+# === ДНЕВНОЙ ТОП (С УКРАИНСКИМ ВРЕМЕНЕМ UTC+3) ===
 @dp.message(F.text == "🏆 Дневной топ")
 async def daily_top_sec(message: types.Message):
     if not await check_access(message):
         return
     
-    now = datetime.now()
+    now = get_ukraine_time()
     current_hour = now.hour
     
     if current_hour < 11:
-        await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс ещё не начался! Старт каждый день в 11:00.", parse_mode="HTML")
+        await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс ещё не начался! Старт каждый день ровно в 11:00 по Полтаве.", parse_mode="HTML")
         return
     elif current_hour >= 21:
         await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс на сегодня уже закончился! Ждём завтра в 11:00.", parse_mode="HTML")
@@ -466,16 +470,17 @@ async def daily_top_sec(message: types.Message):
     
     await message.answer(text, parse_mode="HTML")
 
-# === ФОНОВЫЙ ПЛАНИРОВЩИК (АВТОМАТИЧЕСКИЙ СТАРТ И НАГРАДЫ) ===
+# === ФОНОВЫЙ ПЛАНИРОВЩИК (ПО УКРАИНСКОМУ ВРЕМЕНИ) ===
 async def daily_contest_scheduler():
     last_notified_start = None
     last_notified_end = None
     while True:
-        now = datetime.now()
+        now = get_ukraine_time()
         current_date = now.date()
         hour = now.hour
         minute = now.minute
         
+        # 11:00 - Старт конкурса
         if hour == 11 and minute == 0 and last_notified_start != current_date:
             last_notified_start = current_date
             db = load_db()
@@ -486,6 +491,7 @@ async def daily_contest_scheduler():
                 except Exception:
                     pass
                     
+        # 21:00 - Окончание конкурса и автовыдача топ-5
         if hour == 21 and minute == 0 and last_notified_end != current_date:
             last_notified_end = current_date
             db = load_db()
