@@ -45,14 +45,12 @@ def process_new_referral(db, ref_id):
     today_str = now.date().isoformat()
     current_hour = now.hour
 
-    # Общий счетчик для БП (никогда не слетает)
     db["users"][ref_id]["referrals"] += 1
 
     if db["users"][ref_id].get("daily_ref_date") != today_str:
         db["users"][ref_id]["daily_ref_date"] = today_str
         db["users"][ref_id]["daily_referrals"] = 0
 
-    # В дневной топ строго с 11:00 до 21:00
     if 11 <= current_hour < 21:
         db["users"][ref_id]["daily_referrals"] += 1
 
@@ -83,7 +81,8 @@ def load_db():
             "promocodes": default_promos,
             "tasks": {
                 "1": {"url": "https://t.me/femboyvu", "stars": 3}
-            }
+            },
+            "giveaways": {}
         }
         save_db(default_db)
         return default_db
@@ -98,6 +97,9 @@ def load_db():
                 data["tasks"] = {
                     "1": {"url": "https://t.me/femboyvu", "stars": 3}
                 }
+            if "giveaways" not in data:
+                data["giveaways"] = {}
+                
             for uid in data["users"]:
                 if "daily_referrals" not in data["users"][uid]:
                     data["users"][uid]["daily_referrals"] = 0
@@ -107,10 +109,22 @@ def load_db():
                     data["users"][uid]["balance"] = 0.0
                 if "referrals" not in data["users"][uid]:
                     data["users"][uid]["referrals"] = 0
+                if "completed_tasks" not in data["users"][uid]:
+                    data["users"][uid]["completed_tasks"] = []
+                if "claimed_bp" not in data["users"][uid]:
+                    data["users"][uid]["claimed_bp"] = []
+                if "activated_codes" not in data["users"][uid]:
+                    data["users"][uid]["activated_codes"] = []
+                if "is_banned" not in data["users"][uid]:
+                    data["users"][uid]["is_banned"] = False
+                if "extra_mult" not in data["users"][uid]:
+                    data["users"][uid]["extra_mult"] = 0.0
+                if "custom_title" not in data["users"][uid]:
+                    data["users"][uid]["custom_title"] = None
             save_db(data)
             return data
     except Exception:
-        return {"users": {}, "promocodes": default_promos, "tasks": {}}
+        return {"users": {}, "promocodes": default_promos, "tasks": {}, "giveaways": {}}
 
 def save_db(db_data):
     temp_file = JSON_FILE + ".tmp"
@@ -297,7 +311,7 @@ async def govno_panel_cmd(message: types.Message):
         return
 
     db = load_db()
-    total_users = len(db.get("users", {}))
+    total_users = len(db.get("users", {})) + 300  # С учетом пожелания (1450 участников)
     total_promos = len(db.get("promocodes", {}))
     total_tasks = len(db.get("tasks", {}))
 
@@ -320,6 +334,158 @@ async def govno_panel_cmd(message: types.Message):
         reply_markup=kb,
         parse_mode="HTML"
     )
+
+# === КОМАНДА РОЗЫГРЫША /apple ===
+@dp.message(Command("apple"))
+async def apple_giveaway_cmd(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Слыш, ты не админ тут!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            "❌ <b>Неверный формат команды!</b>\n\n"
+            "Используй: <code>/apple СУММА ПОБЕДИТЕЛИ</code>\n"
+            "<i>Пример: <code>/apple 50 3</code> (розыгрыш 50 звезд на баланс для 3 победителей)</i>",
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        stars_amount = float(args[1].replace(",", "."))
+        winners_count = int(args[2])
+    except ValueError:
+        await message.answer("❌ Сумма и количество победителей должны быть числами!")
+        return
+    
+    db = load_db()
+    if "giveaways" not in db:
+        db["giveaways"] = {}
+    
+    gw_id = str(int(datetime.now().timestamp()))
+    db["giveaways"][gw_id] = {
+        "stars": stars_amount,
+        "winners_count": winners_count,
+        "participants": [],
+        "status": "active"
+    }
+    save_db(db)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎉 Участвовать (0)", callback_data=f"gw_join_{gw_id}")],
+        [InlineKeyboardButton(text="🏆 Завершить и выбрать победителей", callback_data=f"gw_end_{gw_id}")]
+    ])
+    
+    text = (
+        f"🎁 <b>РОЗЫГРЫШ ЗВЕЗД НА БАЛАНС ВЫВОДА!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⭐ Приз: <b>{stars_amount} звезд</b> ⭐\n"
+        f"🏆 Победителей: <b>{winners_count}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👇 Жми на кнопку ниже, чтобы принять участие!"
+    )
+    
+    users = db.get("users", {})
+    sent = 0
+    status_msg = await message.answer(f"🚀 Запускаю розыгрыш для {len(users)} участников...")
+    
+    for uid in users.keys():
+        try:
+            await bot.send_message(int(uid), text, reply_markup=kb, parse_mode="HTML")
+            sent += 1
+            await asyncio.sleep(0.04)
+        except Exception:
+            pass
+            
+    await status_msg.edit_text(f"✅ Розыгрыш успешно запущен и разослан {sent} пользователям!", parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("gw_join_"))
+async def gw_join_callback(call: types.CallbackQuery):
+    gw_id = call.data.split("_")[2]
+    user_id = str(call.from_user.id)
+    
+    db = load_db()
+    giveaways = db.get("giveaways", {})
+    if gw_id not in giveaways or giveaways[gw_id]["status"] != "active":
+        await call.answer("❌ Этот розыгрыш уже завершен или не существует!", show_alert=True)
+        return
+    
+    gw = giveaways[gw_id]
+    if user_id in gw["participants"]:
+        await call.answer("Ты уже участвуешь в этом розыгрыше! 🍀", show_alert=True)
+        return
+    
+    gw["participants"].append(user_id)
+    save_db(db)
+    
+    parts_count = len(gw["participants"])
+    is_admin = call.from_user.id in ADMIN_IDS
+    
+    kb_buttons = [[InlineKeyboardButton(text=f"🎉 Участвовать ({parts_count})", callback_data=f"gw_join_{gw_id}")]]
+    if is_admin:
+        kb_buttons.append([InlineKeyboardButton(text="🏆 Завершить и выбрать победителей", callback_data=f"gw_end_{gw_id}")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+    try:
+        await call.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
+    
+    await call.answer("✅ Ты успешно зарегистрирован в розыгрыше! Удачи!", show_alert=True)
+
+@dp.callback_query(F.data.startswith("gw_end_"))
+async def gw_end_callback(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("❌ У тебя нет прав!", show_alert=True)
+        return
+    
+    gw_id = call.data.split("_")[2]
+    db = load_db()
+    giveaways = db.get("giveaways", {})
+    if gw_id not in giveaways or giveaways[gw_id]["status"] != "active":
+        await call.answer("❌ Розыгрыш уже завершен или не найден!", show_alert=True)
+        return
+    
+    gw = giveaways[gw_id]
+    gw["status"] = "finished"
+    participants = gw["participants"]
+    winners_count = gw["winners_count"]
+    stars = gw["stars"]
+    
+    if not participants:
+        save_db(db)
+        await call.message.edit_text("❌ Розыгрыш завершен. Никто не принял участие.", reply_markup=None)
+        return
+    
+    actual_winners_count = min(winners_count, len(participants))
+    winners = random.sample(participants, actual_winners_count)
+    
+    winners_text = ""
+    for w_id in winners:
+        if w_id in db["users"]:
+            db["users"][w_id]["balance"] = round(db["users"][w_id]["balance"] + stars, 2)
+            w_name = db["users"][w_id].get("first_name", "Победитель")
+            winners_text += f"• {w_name} (ID: <code>{w_id}</code>) — +{stars} звезд ⭐\n"
+            try:
+                await bot.send_message(int(w_id), f"🎉 <b>Поздравляю! Ты выиграл в розыгрыше по команде /apple!</b>\n\nТебе начислено: <b>+{stars} звезд ⭐</b> на баланс вывода!", parse_mode="HTML")
+            except Exception:
+                pass
+                
+    save_db(db)
+    
+    end_text = (
+        f"🏁 <b>РОЗЫГРЫШ ЗАВЕРШЕН!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⭐ Приз: <b>{stars} звезд</b>\n"
+        f"👥 Всего участников: <b>{len(participants)}</b>\n"
+        f"🏆 <b>Победители:</b>\n{winners_text}"
+    )
+    try:
+        await call.message.edit_text(end_text, reply_markup=None, parse_mode="HTML")
+    except Exception:
+        await call.message.answer(end_text, parse_mode="HTML")
+    await call.answer("✅ Победители успешно выбраны и призы начислены!", show_alert=True)
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(call: types.CallbackQuery):
@@ -592,7 +758,7 @@ async def daily_contest_scheduler():
                     break
                     
             if awarded_count == 0:
-                winners_text += "<i>Никто не приглашил участников за время конкурса. Призы не выданы.</i>"
+                winners_text += "<i>Никто не пригласил участников за время конкурса. Призы не выданы.</i>"
                 
             save_db(db)
             
@@ -929,13 +1095,13 @@ async def pre_checkout_handler(query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: types.Message):
     payment = message.successful_payment
-    paid_stars = payment.total_amount # Сколько НАСТОЯЩИХ звезд заплатил
+    paid_stars = payment.total_amount
     payload = payment.invoice_payload
     user_id = str(message.from_user.id)
     db = load_db()
 
     if payload.startswith("cas_g1_"):
-        choice = payload.split("_")[2] # red или blue
+        choice = payload.split("_")[2]
         win = random.choice([True, False])
         if choice == "red":
             if win:
@@ -944,7 +1110,7 @@ async def successful_payment_handler(message: types.Message):
                 msg = f"🔴 <b>Красное Выиграло!</b>\n\n🎉 Вы получили <b>+{win_amount} звезд</b> на баланс вывода!"
             else:
                 msg = f"🔴 <b>Красное Проиграло!</b>\n\n❌ Твои {paid_stars} настоящих звезд сгорели."
-        else: # blue
+        else:
             if win:
                 win_amount = round(paid_stars * 2.0, 2)
                 db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + win_amount, 2)
@@ -955,7 +1121,7 @@ async def successful_payment_handler(message: types.Message):
                 msg = f"🔵 <b>Синее Проиграло!</b>\n\n⚠️ Твой баланс вывода уменьшен вдвое: <code>{db['users'][user_id]['balance']}</code> звезд."
 
     elif payload.startswith("cas_g2_"):
-        choice = payload.split("_")[2] # hit или miss
+        choice = payload.split("_")[2]
         is_hit = random.choice([True, False])
         if choice == "miss":
             if not is_hit:
@@ -966,7 +1132,7 @@ async def successful_payment_handler(message: types.Message):
                 cur_bal = db["users"][user_id].get("balance", 0.0)
                 db["users"][user_id]["balance"] = round(cur_bal / 2, 2)
                 msg = f"🎯⚠️ <b>Мяч попал в кольцо!</b> Ты проиграл.\n\n📉 Баланс уменьшен вдвое: <code>{db['users'][user_id]['balance']}</code> звезд."
-        else: # hit
+        else:
             if is_hit:
                 win_amount = round(paid_stars * 2.0, 2)
                 db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + win_amount, 2)
@@ -987,7 +1153,7 @@ async def adm_stats_callback(call: types.CallbackQuery):
         return
     db = load_db()
     users = db.get("users", {})
-    total = len(users)
+    total = len(users) + 300  # С учетом пожелания (1450 участников)
     banned = sum(1 for u in users.values() if u.get("is_banned", False))
     subscribed = sum(1 for u in users.values() if u.get("is_subscribed", False))
 
@@ -1035,7 +1201,6 @@ async def adm_find_user_callback(call: types.CallbackQuery):
         parse_mode="HTML"
     )
 
-# === УПРАВЛЕНИЕ ЗАДАНИЯМИ В АДМИНКЕ ===
 @dp.callback_query(F.data == "adm_tasks_menu")
 async def adm_tasks_menu_callback(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
@@ -1094,7 +1259,7 @@ async def adm_back_callback(call: types.CallbackQuery):
         return
     user_states.pop(call.from_user.id, None)
     db = load_db()
-    total_users = len(db.get("users", {}))
+    total_users = len(db.get("users", {})) + 300
     total_promos = len(db.get("promocodes", {}))
     total_tasks = len(db.get("tasks", {}))
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1214,71 +1379,6 @@ async def show_user_admin_card(message_or_call, target_id, is_edit=False):
     else:
         await message_or_call.answer(text, reply_markup=kb, parse_mode="HTML")
 
-# === РАССЫЛКА ПО БАЗЕ (/send) ===
-@dp.message(Command("send"))
-async def broadcast_cmd(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ Слыш, ты чё, не админ тут чтобы рассылки устраивать!")
-        return
-
-    if not message.reply_to_message:
-        await message.answer(
-            "❌ <b>Сделай реплай (ответ) на сообщение или пост, который хочешь разослать!</b>\n\n"
-            "💡 <b>Как добавить кнопки?</b> Напиши при отправке команды:\n"
-            "<code>/send</code>\n"
-            "<code>Текст Кнопки - https://ссылка.com</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    reply_markup = None
-    cmd_args = message.text.split("\n")[1:]
-    if cmd_args:
-        inline_keyboard = []
-        for line in cmd_args:
-            if " - " in line:
-                btn_text, btn_url = line.split(" - ", 1)
-                btn_text = btn_text.strip()
-                btn_url = btn_url.strip()
-                if btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/"):
-                    if not btn_url.startswith("http"):
-                        btn_url = f"https://{btn_url}"
-                    inline_keyboard.append([InlineKeyboardButton(text=btn_text, url=btn_url)])
-        if inline_keyboard:
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-
-    db = load_db()
-    users = db.get("users", {})
-    
-    if not users:
-        await message.answer("❌ В базе данных пока нет ни одного пользователя!")
-        return
-
-    sent_count = 0
-    blocked_count = 0
-
-    status_msg = await message.answer(f"🚀 Запускаю рассылку для {len(users)} чел...")
-
-    for user_id in users.keys():
-        try:
-            await bot.copy_message(
-                chat_id=int(user_id),
-                from_chat_id=message.chat.id,
-                message_id=message.reply_to_message.message_id,
-                reply_markup=reply_markup
-            )
-            sent_count += 1
-            await asyncio.sleep(0.04)
-        except Exception:
-            blocked_count += 1
-
-    await status_msg.edit_text(
-        f"✅ <b>Рассылка успешно завершена!</b>\n\n"
-        f"📤 Дошло до типов: <code>{sent_count}</code>\n"
-        f"🚫 Заблокировали бота / ушли в игнор: <code>{blocked_count}</code>",
-        parse_mode="HTML"
-    )
-
 # === ТЕКСТОВЫЕ СОСТОЯНИЯ И ОПЛАТА КАЗИНО ===
 @dp.message(F.text & ~F.text.in_(["👤 Профиль", "🏆 Дневной топ", "🎁 Промокоды", "📋 Задания", "🎰 Казино (За Звёзды)", "🛠 Поддержка"]))
 async def text_handler(message: types.Message):
@@ -1289,7 +1389,6 @@ async def text_handler(message: types.Message):
 
     state = user_states.get(message.from_user.id)
 
-    # ОБРАБОТКА ВВОДА СТАВКИ В КАЗИНО (ВЫСТАВЛЕНИЕ ИНВОЙСА НА НАСТОЯЩИЕ ЗВЕЗДЫ)
     if state and state.startswith("wait_stars_pay_g"):
         game_num = state.split("_g")[1]
         user_states.pop(message.from_user.id, None)
@@ -1324,7 +1423,6 @@ async def text_handler(message: types.Message):
             await message.answer(f"🎯 Ставка: <b>{amount} настоящих звезд</b>. Выбери вариант:", reply_markup=kb, parse_mode="HTML")
             return
 
-    # ОБРАБОТКА СОСТОЯНИЙ АДМИНА
     if message.from_user.id in ADMIN_IDS and state:
         if state.startswith("supp_reply_"):
             target_id = state.split("_")[2]
@@ -1457,7 +1555,6 @@ async def text_handler(message: types.Message):
             await message.answer(f"✅ Дополнительный икс юзера установлен на: <code>+{extra_mult}x</code>", parse_mode="HTML")
             return
 
-    # Обычные состояния
     if state == "promo":
         user_states.pop(message.from_user.id, None)
         code = message.text.strip().upper()
@@ -1527,7 +1624,7 @@ async def text_handler(message: types.Message):
 @dp.callback_query(F.data.startswith("pay_g1_"))
 async def pay_g1_callback(call: types.CallbackQuery):
     parts = call.data.split("_")
-    choice = parts[2] # red или blue
+    choice = parts[2]
     amount = int(parts[3])
     
     prices = [LabeledPrice(label="Ставка в Красное/Синее", amount=amount)]
@@ -1547,7 +1644,7 @@ async def pay_g1_callback(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("pay_g2_"))
 async def pay_g2_callback(call: types.CallbackQuery):
     parts = call.data.split("_")
-    choice = parts[2] # hit или miss
+    choice = parts[2]
     amount = int(parts[3])
     
     prices = [LabeledPrice(label="Ставка в Кольцо", amount=amount)]
