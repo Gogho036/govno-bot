@@ -3,6 +3,7 @@ import logging
 import json
 import os
 import random
+from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -38,7 +39,9 @@ BP_LEVELS = [
     {"req": 20, "type": "title_mult", "value": 0.10, "title": "Любитель ⚔️", "text": "Звание «Любитель» (+0.10x к множителю) 🏅"},
     {"req": 30, "type": "stars", "value": 10, "text": "10 ⭐️ Звёзд"},
     {"req": 35, "type": "mult", "value": 0.08, "text": "+0.08x к множителю 📈"},
-    {"req": 50, "type": "title_mult", "value": 0.25, "title": "Бог ⚡️", "text": "Звание «Бог» (+0.25x к множителю) 👑"}
+    {"req": 50, "type": "title_mult", "value": 0.25, "title": "Бог ⚡️", "text": "Звание «Бог» (+0.25x к множителю) 👑"},
+    {"req": 75, "type": "case", "min_stars": 1, "max_stars": 15, "text": "🎁 Кейс (1-15 звезд)"},
+    {"req": 100, "type": "title_mult", "value": 0.30, "title": "Правитель 👑", "text": "Звание «Правитель» (+0.30x к множителю) 🏛"}
 ]
 
 # === БАЗА ДАННЫХ ===
@@ -107,7 +110,7 @@ def get_user_stats(user_data):
 # === КЛАВИАТУРЫ ===
 def get_main_keyboard():
     kb = [
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🎫 Боевой Пропуск")],
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Дневной топ")],
         [KeyboardButton(text="🎁 Промокоды"), KeyboardButton(text="📋 Задания")],
         [KeyboardButton(text="🛠 Поддержка")]
     ]
@@ -411,6 +414,121 @@ async def back_to_profile(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
+# === ДНЕВНОЙ ТОП (С ПРОВЕРКОЙ ВРЕМЕНИ) ===
+@dp.message(F.text == "🏆 Дневной топ")
+async def daily_top_sec(message: types.Message):
+    if not await check_access(message):
+        return
+    
+    now = datetime.now()
+    current_hour = now.hour
+    
+    # Проверка времени конкурса (с 11:00 до 21:00)
+    if current_hour < 11:
+        await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс ещё не начался! Старт каждый день в 11:00.", parse_mode="HTML")
+        return
+    elif current_hour >= 21:
+        await message.answer("⏳ <b>Дневной топ</b>\n\n❌ Конкурс на сегодня уже закончился! Ждём завтра в 11:00.", parse_mode="HTML")
+        return
+
+    db = load_db()
+    users = db.get("users", {})
+    
+    sorted_users = sorted(
+        users.items(),
+        key=lambda x: x[1].get("referrals", 0),
+        reverse=True
+    )[:10]
+    
+    text = (
+        f"🏆 <b>ДНЕВНОЙ ТОП ПО РЕФЕРАЛАМ</b>\n"
+        f"🕒 <i>Конкурс активен ежедневно с 11:00 до 21:00!</i>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🎁 <b>Награды дня:</b>\n"
+        f"🥇 1 место: 50 звезд ⭐\n"
+        f"🥈 2 место: 25 звезд ⭐\n"
+        f"🥉 3 место: 15 звезд ⭐\n"
+        f"4️⃣ 4 место: 10 звезд ⭐\n"
+        f"5️⃣ 5 место: 5 звезд ⭐\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Топ-10 участников:</b>\n\n"
+    )
+    
+    if not sorted_users or all(u[1].get("referrals", 0) == 0 for u in sorted_users):
+        text += "<i>Пока никто никого не пригласил. Ворвись в топ первым!</i>"
+    else:
+        for i, (uid, udata) in enumerate(sorted_users, 1):
+            name = udata.get("first_name", "Без имени")
+            username = udata.get("username", "нет")
+            refs = udata.get("referrals", 0)
+            
+            medal = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else f"<b>{i}.</b>"))
+            text += f"{medal} {name} ({username}) — <b>{refs}</b> реф.\n"
+    
+    await message.answer(text, parse_mode="HTML")
+
+# === ФОНОВЫЙ ПЛАНИРОВЩИК (АВТОМАТИЧЕСКИЙ СТАРТ И НАГРАДЫ) ===
+async def daily_contest_scheduler():
+    last_notified_start = None
+    last_notified_end = None
+    while True:
+        now = datetime.now()
+        current_date = now.date()
+        hour = now.hour
+        minute = now.minute
+        
+        # 11:00 - Оповещение о старте конкурса
+        if hour == 11 and minute == 0 and last_notified_start != current_date:
+            last_notified_start = current_date
+            db = load_db()
+            for uid in db.get("users", {}).keys():
+                try:
+                    await bot.send_message(int(uid), "🚀 <b>Дневной конкурс по рефералам начался!</b> Залетай в бот, забирай ссылку и рви в топ за звездами!", parse_mode="HTML")
+                    await asyncio.sleep(0.04)
+                except Exception:
+                    pass
+                    
+        # 21:00 - Окончание конкурса и автоматическая выдача наград топ-5
+        if hour == 21 and minute == 0 and last_notified_end != current_date:
+            last_notified_end = current_date
+            db = load_db()
+            users = db.get("users", {})
+            
+            sorted_users = sorted(
+                users.items(),
+                key=lambda x: x[1].get("referrals", 0),
+                reverse=True
+            )
+            
+            prizes = {1: 50, 2: 25, 3: 15, 4: 10, 5: 5}
+            winners_text = "🏁 <b>Дневной конкурс завершен! Итоги топ-5:</b>\n\n"
+            
+            for i in range(1, 6):
+                if i <= len(sorted_users):
+                    uid, udata = sorted_users[i - 1]
+                    prize = prizes[i]
+                    db["users"][uid]["balance"] = round(db["users"][uid]["balance"] + prize, 2)
+                    name = udata.get("first_name", "Тип")
+                    winners_text += f"{i} место: {name} — +{prize} звезд ⭐\n"
+                    try:
+                        await bot.send_message(int(uid), f"🎉 <b>Поздравляю!</b> Ты занял {i} место в дневном топе и тебе автоматически начислено <b>{prize} звезд ⭐</b>!", parse_mode="HTML")
+                    except Exception:
+                        pass
+                else:
+                    break
+                    
+            save_db(db)
+            
+            # Рассылка итогов всем участникам
+            for uid in db.get("users", {}).keys():
+                try:
+                    await bot.send_message(int(uid), winners_text, parse_mode="HTML")
+                    await asyncio.sleep(0.04)
+                except Exception:
+                    pass
+                    
+        await asyncio.sleep(30) # Проверка каждые 30 секунд
+
 # === БОЕВОЙ ПРОПУСК (BATTLE PASS) ===
 async def send_bp_menu(message_or_call, user_id, is_edit=False):
     db = load_db()
@@ -450,12 +568,6 @@ async def send_bp_menu(message_or_call, user_id, is_edit=False):
         await message_or_call.message.edit_text(bp_text, reply_markup=kb, parse_mode="HTML")
     else:
         await message_or_call.answer(bp_text, reply_markup=kb, parse_mode="HTML")
-
-@dp.message(F.text == "🎫 Боевой Пропуск")
-async def bp_sec_msg(message: types.Message):
-    if not await check_access(message):
-        return
-    await send_bp_menu(message, str(message.from_user.id), is_edit=False)
 
 @dp.callback_query(F.data == "open_bp")
 async def bp_sec_cb(call: types.CallbackQuery):
@@ -500,6 +612,24 @@ async def bp_claim_callback(call: types.CallbackQuery):
         reward_msg = f"+{bonus}x к множителю"
         if "title" in target_lvl:
             reward_msg += f" и звание «{target_lvl['title']}»"
+    elif target_lvl["type"] == "case":
+        await call.message.edit_text("🎁 <b>Открываем секретный кейс за 75 рефералов...</b>\n\n🎲 Крутим рулетку: 2 ⭐", parse_mode="HTML")
+        await asyncio.sleep(0.4)
+        await call.message.edit_text("🎁 <b>Открываем секретный кейс за 75 рефералов...</b>\n\n🎲 Крутим рулетку: 7 ⭐", parse_mode="HTML")
+        await asyncio.sleep(0.4)
+        await call.message.edit_text("🎁 <b>Открываем секретный кейс за 75 рефералов...</b>\n\n🎲 Крутим рулетку: 12 ⭐", parse_mode="HTML")
+        await asyncio.sleep(0.4)
+        
+        reward = random.randint(target_lvl["min_stars"], target_lvl["max_stars"])
+        user_data["balance"] = round(user_data["balance"] + reward, 2)
+        save_db(db)
+        
+        await call.message.edit_text(
+            f"🎉 <b>Кейс успешно открыт!</b>\n\n"
+            f"⭐ Тебе выпало: <b>{reward}</b> звезд из кейса за 75 рефералов!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в Боевой Пропуск", callback_data="open_bp")]])
+        )
+        return
             
     save_db(db)
     await call.answer(f"🎉 Успешно! Получено: {reward_msg}", show_alert=True)
@@ -995,7 +1125,7 @@ async def broadcast_cmd(message: types.Message):
     )
 
 # === ТЕКСТОВЫЕ СОСТОЯНИЯ ===
-@dp.message(F.text & ~F.text.in_(["👤 Профиль", "🎫 Боевой Пропуск", "🎁 Промокоды", "📋 Задания", "🛠 Поддержка"]))
+@dp.message(F.text & ~F.text.in_(["👤 Профиль", "🏆 Дневной топ", "🎁 Промокоды", "📋 Задания", "🛠 Поддержка"]))
 async def text_handler(message: types.Message):
     user_id = str(message.from_user.id)
     db = load_db()
@@ -1193,6 +1323,8 @@ async def start_web_server():
 async def main():
     print("Бот и веб-сервер запущены!")
     await start_web_server()
+    # Запуск фонового планировщика для дневного топа
+    asyncio.create_task(daily_contest_scheduler())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
