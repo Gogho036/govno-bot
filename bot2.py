@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import os
+import random
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -18,9 +19,8 @@ CHECK_CHANNEL = "@hyisag"
 
 SPONSORS = [
     {"name": "Спонсор 1", "url": "https://t.me/grasstj1", "check": "grasstj1"},
-    {"name": "Спонсор 2", "url": "https://t.me/zuzxd", "check": ""},
-    {"name": "Спонсор 3", "url": "https://t.me/FOXIFAH", "check": "zuzxd"},
-    {"name": "Спонсор 4", "url": "https://t.me/femboyvu", "check": "femboyvu"}
+    {"name": "Спонсор 2", "url": "https://t.me/zuzxd", "check": "zuzxd"},
+    {"name": "Спонсор 3", "url": "https://t.me/femboyvu", "check": "femboyvu"}
 ]
 
 JSON_FILE = "users_db.json"
@@ -43,14 +43,16 @@ BP_LEVELS = [
 
 # === БАЗА ДАННЫХ ===
 def load_db():
+    default_promos = {
+        "FEMBOY": {"stars": 2, "max_uses": 50, "used_by": []},
+        "FEMBOY3": {"stars": 3, "max_uses": 999999, "used_by": []},
+        "ADMIN": {"stars": 7, "max_uses": 1, "used_by": []},
+        "CEYS": {"min_stars": 1, "max_stars": 6, "max_uses": 500, "used_by": []}
+    }
     if not os.path.exists(JSON_FILE):
         default_db = {
             "users": {},
-            "promocodes": {
-                "FEMBOY": {"stars": 2, "max_uses": 50, "used_by": []},
-                "FEMBOY3": {"stars": 3, "max_uses": 999999, "used_by": []},
-                "ADMIN": {"stars": 7, "max_uses": 1, "used_by": []}
-            },
+            "promocodes": default_promos,
             "tasks": {
                 "1": {"url": "https://t.me/femboyvu", "stars": 3}
             }
@@ -63,21 +65,19 @@ def load_db():
             if "users" not in data:
                 data["users"] = {}
             if "promocodes" not in data:
-                data["promocodes"] = {
-                    "FEMBOY": {"stars": 2, "max_uses": 50, "used_by": []},
-                    "FEMBOY3": {"stars": 3, "max_uses": 999999, "used_by": []},
-                    "ADMIN": {"stars": 7, "max_uses": 1, "used_by": []}
-                }
+                data["promocodes"] = default_promos
             if "tasks" not in data:
                 data["tasks"] = {
                     "1": {"url": "https://t.me/femboyvu", "stars": 3}
                 }
             if "ADMIN" not in data["promocodes"]:
                 data["promocodes"]["ADMIN"] = {"stars": 7, "max_uses": 1, "used_by": []}
+            if "CEYS" not in data["promocodes"]:
+                data["promocodes"]["CEYS"] = {"min_stars": 1, "max_stars": 6, "max_uses": 500, "used_by": []}
                 save_db(data)
             return data
     except Exception:
-        return {"users": {}, "promocodes": {}, "tasks": {}}
+        return {"users": {}, "promocodes": default_promos, "tasks": {}}
 
 def save_db(db_data):
     with open(JSON_FILE, "w", encoding="utf-8") as f:
@@ -87,8 +87,9 @@ def save_db(db_data):
 def get_user_stats(user_data):
     refs = user_data.get("referrals", 0)
     claimed = user_data.get("claimed_bp", [])
+    extra_mult = user_data.get("extra_mult", 0.0)
     
-    mult = 1.0 + (refs * 0.02)
+    mult = 1.0 + (refs * 0.02) + extra_mult
     title = "Новичок 🐣"
     
     for lvl in BP_LEVELS:
@@ -97,6 +98,9 @@ def get_user_stats(user_data):
                 mult += lvl["value"]
             if "title" in lvl:
                 title = lvl["title"]
+                
+    if user_data.get("custom_title"):
+        title = user_data["custom_title"]
                 
     return round(mult, 2), title
 
@@ -204,7 +208,9 @@ async def start_cmd(message: types.Message):
             "ref_bonus_given": False,
             "activated_codes": [],
             "claimed_bp": [],
-            "is_banned": False
+            "is_banned": False,
+            "extra_mult": 0.0,
+            "custom_title": None
         }
     else:
         db["users"][user_id]["username"] = username
@@ -217,6 +223,10 @@ async def start_cmd(message: types.Message):
             db["users"][user_id]["completed_tasks"] = []
         if "is_banned" not in db["users"][user_id]:
             db["users"][user_id]["is_banned"] = False
+        if "extra_mult" not in db["users"][user_id]:
+            db["users"][user_id]["extra_mult"] = 0.0
+        if "custom_title" not in db["users"][user_id]:
+            db["users"][user_id]["custom_title"] = None
         if not db["users"][user_id].get("referred_by") and referrer_id:
             db["users"][user_id]["referred_by"] = referrer_id
 
@@ -856,6 +866,20 @@ async def adm_user_action_callback(call: types.CallbackQuery):
             parse_mode="HTML"
         )
         await call.answer()
+    elif action == "title":
+        user_states[call.from_user.id] = f"admin_wait_title_{target_id}"
+        await call.message.answer(
+            f"🎖 Введи новое звание для юзера <code>{target_id}</code> (текстом):",
+            parse_mode="HTML"
+        )
+        await call.answer()
+    elif action == "mult":
+        user_states[call.from_user.id] = f"admin_wait_mult_{target_id}"
+        await call.message.answer(
+            f"⚡️ Введи добавку к множителю (иксу) для юзера <code>{target_id}</code> (например, <code>0.5</code> или <code>1.2</code>):",
+            parse_mode="HTML"
+        )
+        await call.answer()
 
 async def show_user_admin_card(message_or_call, target_id, is_edit=False):
     db = load_db()
@@ -864,6 +888,8 @@ async def show_user_admin_card(message_or_call, target_id, is_edit=False):
     fname = uinfo.get("first_name", "нет")
     balance = uinfo.get("balance", 0)
     refs = uinfo.get("referrals", 0)
+    extra_mult = uinfo.get("extra_mult", 0.0)
+    custom_title = uinfo.get("custom_title", "нет")
     banned = uinfo.get("is_banned", False)
     ban_text = "Разбанить 🟢" if banned else "Забанить 🔴"
 
@@ -875,6 +901,8 @@ async def show_user_admin_card(message_or_call, target_id, is_edit=False):
         f"🏷 Юзернейм: {uname}\n"
         f"⭐ Баланс: <code>{balance}</code> звезд\n"
         f"👥 Рефералов: <code>{refs}</code>\n"
+        f"⚡️ Доп. икс: <code>+{extra_mult}x</code>\n"
+        f"🎖 Кастом. звание: <code>{custom_title}</code>\n"
         f"📌 Статус: {'🔴 Заблокирован' if banned else '🟢 Активен'}\n"
         f"━━━━━━━━━━━━━━━━━━"
     )
@@ -883,6 +911,10 @@ async def show_user_admin_card(message_or_call, target_id, is_edit=False):
         [
             InlineKeyboardButton(text="➕ Дать звезды", callback_data=f"adm_user_act_add_{target_id}"),
             InlineKeyboardButton(text="➖ Забрать звезды", callback_data=f"adm_user_act_sub_{target_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🎖 Дать звание", callback_data=f"adm_user_act_title_{target_id}"),
+            InlineKeyboardButton(text="⚡️ Дать иксы", callback_data=f"adm_user_act_mult_{target_id}")
         ],
         [
             InlineKeyboardButton(text=ban_text, callback_data=f"adm_user_act_ban_{target_id}")
@@ -1057,6 +1089,34 @@ async def text_handler(message: types.Message):
                 await message.answer(f"✅ Успешно списано {amount} звезд у юзера <code>{target_id}</code>!", parse_mode="HTML")
             return
 
+        elif state.startswith("admin_wait_title_"):
+            target_id = state.split("_")[3]
+            user_states.pop(message.from_user.id, None)
+            new_title = message.text.strip()
+            if target_id not in db["users"]:
+                await message.answer("❌ Ошибка: пользователь пропал из базы.")
+                return
+            db["users"][target_id]["custom_title"] = new_title
+            save_db(db)
+            await message.answer(f"✅ Звание юзера <code>{target_id}</code> успешно изменено на: <b>{new_title}</b>", parse_mode="HTML")
+            return
+
+        elif state.startswith("admin_wait_mult_"):
+            target_id = state.split("_")[3]
+            user_states.pop(message.from_user.id, None)
+            try:
+                extra_mult = float(message.text.strip().replace(",", "."))
+            except ValueError:
+                await message.answer("❌ Введи число (например, 0.5)!")
+                return
+            if target_id not in db["users"]:
+                await message.answer("❌ Ошибка: пользователь пропал из базы.")
+                return
+            db["users"][target_id]["extra_mult"] = extra_mult
+            save_db(db)
+            await message.answer(f"✅ Дополнительный икс юзера <code>{target_id}</code> установлен на: <code>+{extra_mult}x</code>", parse_mode="HTML")
+            return
+
     # Обычные состояния
     if state == "promo":
         user_states.pop(message.from_user.id, None)
@@ -1070,11 +1130,34 @@ async def text_handler(message: types.Message):
                 await message.answer("❌ У этого промокода закончился лимит активаций!")
             else:
                 promo["used_by"].append(user_id)
-                db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + promo["stars"], 2)
-                if code not in db["users"][user_id]["activated_codes"]:
-                    db["users"][user_id]["activated_codes"].append(code)
-                save_db(db)
-                await message.answer(f"🎉 Промокод активирован! Тебе начислено: <b>{promo['stars']}</b> звёзд ⭐", parse_mode="HTML")
+                
+                # Рандомный дроп со спец-анимацией для CEYS
+                if "min_stars" in promo and "max_stars" in promo:
+                    anim_msg = await message.answer("🎁 <b>Открываем кейс Ceys...</b>\n\n🎲 Крутим барабан: 1 ⭐", parse_mode="HTML")
+                    await asyncio.sleep(0.4)
+                    await anim_msg.edit_text("🎁 <b>Открываем кейс Ceys...</b>\n\n🎲 Крутим барабан: 3 ⭐", parse_mode="HTML")
+                    await asyncio.sleep(0.4)
+                    await anim_msg.edit_text("🎁 <b>Открываем кейс Ceys...</b>\n\n🎲 Крутим барабан: 5 ⭐", parse_mode="HTML")
+                    await asyncio.sleep(0.4)
+                    
+                    reward = random.randint(promo["min_stars"], promo["max_stars"])
+                    db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + reward, 2)
+                    if code not in db["users"][user_id]["activated_codes"]:
+                        db["users"][user_id]["activated_codes"].append(code)
+                    save_db(db)
+                    
+                    await anim_msg.edit_text(
+                        f"🎉 <b>Кейс Ceys успешно открыт!</b>\n\n"
+                        f"⭐ Тебе выпало: <b>{reward}</b> звезд!",
+                        parse_mode="HTML"
+                    )
+                else:
+                    stars = promo["stars"]
+                    db["users"][user_id]["balance"] = round(db["users"][user_id]["balance"] + stars, 2)
+                    if code not in db["users"][user_id]["activated_codes"]:
+                        db["users"][user_id]["activated_codes"].append(code)
+                    save_db(db)
+                    await message.answer(f"🎉 Промокод активирован! Тебе начислено: <b>{promo['stars']}</b> звёзд ⭐", parse_mode="HTML")
         else:
             await message.answer("❌ Такого промокода не существует.")
 
