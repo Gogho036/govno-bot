@@ -728,7 +728,7 @@ async def support_sec(message: types.Message):
     user_states[message.from_user.id] = "support"
     await message.answer("🛠 <b>Служба поддержки</b>\n\nНапиши своё сообщение одним текстом:", parse_mode="HTML")
 
-# --- ОТВЕТ АДМИНА НА САППОРТ ЧЕРЕЗ КНОПКУ ---
+# --- ОТВЕТ АДМИНА НА САППОРТ ЧЕРЕЗ КНОПКУ В ЛИЧКЕ ---
 @dp.callback_query(F.data.startswith("supp_ans_"))
 async def support_answer_callback(call: types.CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
@@ -736,11 +736,18 @@ async def support_answer_callback(call: types.CallbackQuery):
         return
     target_id = call.data.split("_")[2]
     user_states[call.from_user.id] = f"supp_reply_{target_id}"
-    await call.message.answer(
-        f"✍️ Напиши ответ для пользователя с ID <code>{target_id}</code> одним сообщением:",
-        parse_mode="HTML"
-    )
-    await call.answer()
+    
+    try:
+        await bot.send_message(
+            call.from_user.id,
+            f"✍️ Напиши ответ для пользователя с ID <code>{target_id}</code> одним сообщением:",
+            parse_mode="HTML"
+        )
+    except Exception:
+        await call.answer("❌ Напиши сначала боту в ЛС, чтобы он мог тебе писать!", show_alert=True)
+        return
+        
+    await call.answer("✅ Перейди в личные сообщения с ботом!", show_alert=True)
 
 # === ОБРАБОТКА ВЫВОДОВ (БЕЗ АВТОВЫВОДА) ===
 @dp.callback_query(F.data.startswith("withdraw_"))
