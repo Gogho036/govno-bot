@@ -26,7 +26,7 @@ SPONSORS = [
     {"name": "Спонсор 1", "url": "https://t.me/grasstj1", "check": "grasstj1"},
     {"name": "Спонсор 2", "url": "https://t.me/zuzxd", "check": "zuzxd"},
     {"name": "Спонсор 3", "url": "https://t.me/foresttStar", "check": ""},
-    {"name": "Спонсор 4", "url": "https://t.me/kyltForesttStar", "check": ""},
+    {"name": "Спонсор 4", "url": "https://t.me/+f8D5SG4AiYw5NDc0", "check": ""},
     {"name": "Спонсор 5", "url": "t.me/cnype", "check": ""}
 ]
 
